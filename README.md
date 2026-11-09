@@ -190,6 +190,7 @@ Some things have new names: categories are now **collections**, filler is **defa
 | `.github/workflows` | Builds and tests: CI, the Docker image, the Windows installer, the plugins, and releases |
 | `scripts` | `bump_version.py` (one version everywhere), build info and release notes |
 | `unraid` | The Unraid template, filled in for each release |
+| `site` | The website's styles, fonts and images. `scripts/build_site.py` builds the pages from it and from the help articles on every release |
 | `docs/features` | Longer explanations of individual features |
 
 ## Licence

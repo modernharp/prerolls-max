@@ -1,0 +1,52 @@
+# Prerolls Max Python Dependencies
+# Backend Framework
+fastapi>=0.115.12
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.31
+starlette>=1.3.1
+
+# Database (schema migrations run at startup via ensure_schema(); alembic unused)
+sqlalchemy>=2.0.40
+
+# Plex API
+PlexAPI>=4.15.16
+
+# Web Scraping & HTTP (for Community Prerolls)
+requests>=2.33.0
+beautifulsoup4>=4.13.3
+lxml>=6.1.0
+urllib3>=2.8.0
+
+# Data Validation
+pydantic>=2.11.1
+
+# Scheduling is a custom thread loop in backend/scheduler.py (no APScheduler)
+
+# Utilities
+python-dotenv>=1.2.2
+
+# Timezone support
+pytz>=2025.1
+
+# NeX-Up Feature (Radarr Integration)
+httpx>=0.28.1
+# Floor raised deliberately: the Windows installer bundles whatever yt-dlp is
+# in the build venv, so a stale one ships and cannot be upgraded in place by
+# the user. 2026.03.17 failed YouTube SABR delivery with a 403 partway through
+# the transfer; 2026.8.19 downloads the same trailers cleanly.
+yt-dlp>=2026.8.19
+psutil>=7.0.0
+# YouTube PO-token provider plugin (defeats "Sign in to confirm you're not a bot").
+# This is the yt-dlp side; the token-generating server (Node) is provided
+# separately (baked into Docker, one-click install on Windows). 2.0.0 matches the
+# server's security release; keep in step with BGUTIL_VERSION in the Dockerfile.
+bgutil-ytdlp-pot-provider>=2.0.0
+
+# QR code generation for the NeX-Up "QR share" preroll template.
+# Pure Python with no dependencies of its own; the matrix it renders is
+# handed to FFmpeg as an overlay.
+segno>=1.6.0
+Pillow>=12.3.0
+
+# Authentication
+bcrypt>=4.3.0

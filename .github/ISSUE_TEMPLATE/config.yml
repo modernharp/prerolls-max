@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Read the Help first
+    url: https://github.com/modernharp/prerolls-max#get-help
+    about: Step-by-step guides and the "my intro isn't playing" troubleshooter are built into the app.

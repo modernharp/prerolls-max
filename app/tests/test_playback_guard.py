@@ -1,0 +1,395 @@
+import datetime
+import os
+import unittest
+from unittest import mock
+
+from backend.scheduler import Scheduler, normalize_playback_guard_minutes
+
+
+class FakeSetting:
+    plex_url = "http://plex.local:32400"
+    plex_token = "token"
+
+
+def response(status=200, content=b'<MediaContainer size="0"></MediaContainer>'):
+    fake = mock.Mock()
+    fake.status_code = status
+    fake.content = content
+    return fake
+
+
+SESSION_XML = (
+    b'<MediaContainer size="1">'
+    b'<Video ratingKey="123" title="A Movie"/>'
+    b'</MediaContainer>'
+)
+IDLE_XML = b'<MediaContainer size="0"></MediaContainer>'
+
+
+class SessionProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.scheduler = Scheduler()
+        self.setting = FakeSetting()
+
+    def test_counts_active_sessions(self):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=SESSION_XML)):
+            self.assertEqual(self.scheduler._plex_active_session_count(self.setting), 1)
+
+    def test_idle_server_reports_zero(self):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=IDLE_XML)):
+            self.assertEqual(self.scheduler._plex_active_session_count(self.setting), 0)
+
+    def test_probe_result_is_cached_within_its_ttl(self):
+        # One scheduler tick can consult this from several apply paths; there is
+        # no value in hitting Plex once per path.
+        with mock.patch("backend.scheduler.requests.get",
+                        return_value=response(content=SESSION_XML)) as get:
+            for _ in range(5):
+                self.scheduler._plex_active_session_count(self.setting)
+            self.assertEqual(get.call_count, 1)
+
+    def test_cache_expires(self):
+        self.scheduler._session_probe_ttl_seconds = 0
+        with mock.patch("backend.scheduler.requests.get",
+                        return_value=response(content=SESSION_XML)) as get:
+            self.scheduler._plex_active_session_count(self.setting)
+            self.scheduler._plex_active_session_count(self.setting)
+            self.assertEqual(get.call_count, 2)
+
+    def test_unreachable_server_reports_unknown(self):
+        with mock.patch("backend.scheduler.requests.get", side_effect=OSError("no route")):
+            self.assertIsNone(self.scheduler._plex_active_session_count(self.setting))
+
+    def test_error_status_reports_unknown(self):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(status=500)):
+            self.assertIsNone(self.scheduler._plex_active_session_count(self.setting))
+
+    def test_missing_credentials_report_unknown(self):
+        class NoCreds:
+            plex_url = None
+            plex_token = None
+
+        self.assertIsNone(self.scheduler._plex_active_session_count(NoCreds()))
+
+
+class DeferPrerollWriteTests(unittest.TestCase):
+    def setUp(self):
+        self.scheduler = Scheduler()
+        self.setting = FakeSetting()
+
+    def test_writes_are_deferred_while_something_is_playing(self):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=SESSION_XML)):
+            self.assertTrue(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+
+    def test_writes_proceed_when_the_server_is_idle(self):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=IDLE_XML)):
+            self.assertFalse(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+
+    def test_an_unreachable_server_does_not_wedge_scheduling(self):
+        # If Plex cannot be probed the write will fail on its own; blocking here
+        # would let an outage freeze scheduling indefinitely.
+        with mock.patch("backend.scheduler.requests.get", side_effect=OSError("down")):
+            self.assertFalse(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+
+    def test_deferral_start_is_recorded_once_and_cleared_when_playback_ends(self):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=SESSION_XML)):
+            self.scheduler._defer_preroll_write(self.setting, "rotation")
+            first = self.scheduler._deferred_write_since
+            self.assertIsNotNone(first)
+
+            self.scheduler._session_probe_at = None  # force a re-probe
+            self.scheduler._defer_preroll_write(self.setting, "rotation")
+            self.assertEqual(self.scheduler._deferred_write_since, first)
+
+        # Ended for longer than the gap Plex leaves between two prerolls.
+        age_last_seen(self.scheduler, minutes=2)
+        self.scheduler._session_probe_at = None
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=IDLE_XML)):
+            self.assertFalse(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+        self.assertIsNone(self.scheduler._deferred_write_since)
+
+    def test_music_and_photos_never_hold_up_a_rewrite(self):
+        xml = (b'<MediaContainer size="2">'
+               b'<Track sessionKey="1" type="track" title="A Song"/>'
+               b'<Photo sessionKey="2" type="photo"/>'
+               b'</MediaContainer>')
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=xml)):
+            self.assertFalse(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+
+    def test_a_movie_well_under_way_stops_holding_up_a_rewrite(self):
+        # Prerolls only run at the start, so once Prerolls Max has watched a video
+        # session for the whole window, rewriting the list can't disturb it.
+        xml = b'<MediaContainer size="1"><Video sessionKey="7" type="movie"/></MediaContainer>'
+        self.scheduler._session_probe_ttl_seconds = 0
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=xml)):
+            self.assertTrue(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+            self.scheduler._session_first_seen["7"] -= datetime.timedelta(minutes=21)
+            self.assertFalse(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+
+    def test_a_new_movie_starts_its_own_window(self):
+        old = b'<MediaContainer size="1"><Video sessionKey="7" type="movie"/></MediaContainer>'
+        both = (b'<MediaContainer size="2"><Video sessionKey="7" type="movie"/>'
+                b'<Video sessionKey="8" type="movie"/></MediaContainer>')
+        self.scheduler._session_probe_ttl_seconds = 0
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=old)):
+            self.scheduler._defer_preroll_write(self.setting, "rotation")
+        self.scheduler._session_first_seen["7"] -= datetime.timedelta(minutes=30)
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=both)):
+            self.assertTrue(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+
+    def test_an_ended_session_is_forgotten(self):
+        self.scheduler._session_probe_ttl_seconds = 0
+        with mock.patch("backend.scheduler.requests.get",
+                        return_value=response(content=b'<MediaContainer size="1"><Video sessionKey="7"/></MediaContainer>')):
+            self.scheduler._defer_preroll_write(self.setting, "rotation")
+        age_last_seen(self.scheduler, minutes=2)
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=IDLE_XML)):
+            self.scheduler._defer_preroll_write(self.setting, "rotation")
+        self.assertEqual(self.scheduler._session_first_seen, {})
+
+    def test_escape_hatch_env_var_disables_the_guard(self):
+        original = os.environ.get("PMAX_ALLOW_MIDPLAYBACK_PREROLL_WRITES")
+        os.environ["PMAX_ALLOW_MIDPLAYBACK_PREROLL_WRITES"] = "1"
+        try:
+            with mock.patch("backend.scheduler.requests.get",
+                            return_value=response(content=SESSION_XML)) as get:
+                self.assertFalse(self.scheduler._defer_preroll_write(self.setting, "rotation"))
+                self.assertEqual(get.call_count, 0)  # not even probed
+        finally:
+            if original is None:
+                os.environ.pop("PMAX_ALLOW_MIDPLAYBACK_PREROLL_WRITES", None)
+            else:
+                os.environ["PMAX_ALLOW_MIDPLAYBACK_PREROLL_WRITES"] = original
+
+
+def age_last_seen(scheduler, minutes):
+    """Pretend every tracked session was last reported `minutes` ago."""
+    for entry in scheduler._session_progress.values():
+        entry["last_seen"] -= datetime.timedelta(minutes=minutes)
+
+
+def movie_xml(offset, *, kind="movie", rating_key="55", session_key="7"):
+    return (f'<MediaContainer size="1"><Video sessionKey="{session_key}" type="{kind}" '
+            f'ratingKey="{rating_key}" viewOffset="{offset}"/></MediaContainer>').encode()
+
+
+class PlaybackProgressTests(unittest.TestCase):
+    """Prerolls Max only probes when it has a change to make, so the first time it
+    sees a session can be an hour into the movie. A movie whose position moves
+    between probes is past its prerolls and must not hold a change for the
+    whole window."""
+
+    def setUp(self):
+        self.scheduler = Scheduler()
+        self.scheduler._session_probe_ttl_seconds = 0
+        self.setting = FakeSetting()
+
+    def defer(self, xml):
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=xml)):
+            return self.scheduler._defer_preroll_write(self.setting, "rotation")
+
+    def test_a_movie_that_is_playing_stops_holding_up_a_rewrite(self):
+        self.assertTrue(self.defer(movie_xml(3_600_000)))
+        self.assertFalse(self.defer(movie_xml(3_660_000)))
+
+    def test_an_episode_that_is_playing_stops_holding_up_a_rewrite(self):
+        self.assertTrue(self.defer(movie_xml(1000, kind="episode")))
+        self.assertFalse(self.defer(movie_xml(31_000, kind="episode")))
+
+    def test_a_resumed_movie_sitting_still_keeps_holding(self):
+        # While prerolls play before a movie, its own position does not move.
+        self.assertTrue(self.defer(movie_xml(1_200_000)))
+        self.assertTrue(self.defer(movie_xml(1_200_000)))
+
+    def test_clips_never_count_as_past_their_prerolls(self):
+        self.assertTrue(self.defer(movie_xml(1000, kind="clip")))
+        self.assertTrue(self.defer(movie_xml(20_000, kind="clip")))
+
+    def test_jitter_below_a_second_is_not_progress(self):
+        self.assertTrue(self.defer(movie_xml(5000)))
+        self.assertTrue(self.defer(movie_xml(5400)))
+
+    def test_a_different_item_in_the_same_session_starts_over(self):
+        self.assertTrue(self.defer(movie_xml(5000, rating_key="55")))
+        self.assertTrue(self.defer(movie_xml(65_000, rating_key="56")))
+        self.assertFalse(self.defer(movie_xml(125_000, rating_key="56")))
+
+    def test_progress_sticks_while_the_movie_is_paused(self):
+        self.assertTrue(self.defer(movie_xml(5000)))
+        self.assertFalse(self.defer(movie_xml(65_000)))
+        self.assertFalse(self.defer(movie_xml(65_000)))
+
+    def test_a_new_movie_still_holds_while_another_plays_on(self):
+        both = (b'<MediaContainer size="2">'
+                b'<Video sessionKey="7" type="movie" ratingKey="55" viewOffset="125000"/>'
+                b'<Video sessionKey="8" type="movie" ratingKey="60" viewOffset="0"/>'
+                b'</MediaContainer>')
+        self.assertTrue(self.defer(movie_xml(65_000)))
+        self.assertTrue(self.defer(both))
+
+    def test_a_missing_or_bad_view_offset_is_not_progress(self):
+        no_offset = b'<MediaContainer size="1"><Video sessionKey="7" type="movie" ratingKey="55"/></MediaContainer>'
+        self.assertTrue(self.defer(no_offset))
+        self.assertTrue(self.defer(movie_xml("abc")))
+        self.assertTrue(self.defer(movie_xml(90_000)))
+
+    def test_ended_sessions_drop_their_progress(self):
+        self.defer(movie_xml(5000))
+        age_last_seen(self.scheduler, minutes=2)
+        self.defer(IDLE_XML)
+        self.assertEqual(self.scheduler._session_progress, {})
+
+
+def item(kind, rating_key, session_key, offset, session_id="lhlvsuni8gr433lp5r3pau05"):
+    """One playing item as Plex reports it: own sessionKey, shared Session id."""
+    return (f'<Video type="{kind}" ratingKey="{rating_key}" sessionKey="{session_key}" '
+            f'viewOffset="{offset}"><Session id="{session_id}"/><Player state="playing"/></Video>')
+
+
+def container(*items):
+    return f'<MediaContainer size="{len(items)}">{"".join(items)}</MediaContainer>'.encode()
+
+
+class GapsBetweenItemsTests(unittest.TestCase):
+    """JB's Plex for iOS, October 12: The Monster Squad with one preroll.
+
+    The preroll was a clip with its own sessionKey, then Plex reported nothing
+    for about 2 s, then the movie under another sessionKey; all three shared
+    one Session id. A rewrite in a gap like that, between two trailers, is
+    what stops Plex on the second trailer.
+    """
+
+    def setUp(self):
+        self.scheduler = Scheduler()
+        self.t0 = datetime.datetime(2026, 10, 12, 7, 25, 1)
+
+    def count(self, xml, seconds):
+        import xml.etree.ElementTree as ET
+        return self.scheduler._count_sessions_in_preroll_window(
+            ET.fromstring(xml), self.t0 + datetime.timedelta(seconds=seconds))
+
+    def test_the_gap_after_a_preroll_still_holds_writes(self):
+        self.assertEqual(self.count(container(item("clip", "65572", "308", 0)), 0), 1)
+        self.assertEqual(self.count(container(), 16), 1, "nothing reported between items")
+        self.assertEqual(self.count(container(item("movie", "65484", "311", 0)), 18), 1)
+        self.assertEqual(self.count(container(item("movie", "65484", "311", 60000)), 78), 0,
+                         "the movie itself is playing")
+
+    def test_one_playback_counts_once_across_its_items(self):
+        self.count(container(item("clip", "65572", "308", 0)), 0)
+        both = container(item("clip", "65573", "309", 0), item("movie", "1", "400", 0, session_id="other"))
+        self.assertEqual(self.count(both, 30), 2)
+
+    def test_a_playback_stopped_during_its_prerolls_stops_holding_after_the_grace(self):
+        self.count(container(item("clip", "65572", "308", 0)), 0)
+        self.assertEqual(self.count(container(), 60), 1)
+        self.assertEqual(self.count(container(), 95), 0)
+        self.assertEqual(self.scheduler._session_progress, {})
+
+    def test_a_finished_movie_does_not_linger(self):
+        self.count(container(item("movie", "65484", "311", 0)), 0)
+        self.count(container(item("movie", "65484", "311", 60000)), 60)
+        self.assertEqual(self.count(container(), 70), 0)
+
+    def test_the_same_client_starting_another_movie_gets_a_new_window(self):
+        # The client watched a movie for an hour; its Session id is old news.
+        self.count(container(item("movie", "65484", "311", 0)), 0)
+        self.count(container(item("movie", "65484", "311", 60000)), 60)
+        self.assertEqual(self.count(container(item("movie", "65484", "311", 3_600_000)), 3600), 0)
+        # Then the next movie's preroll starts on the same client.
+        self.assertEqual(self.count(container(item("clip", "70000", "500", 0)), 3700), 1)
+
+
+class PlaybackGuardSettingTests(unittest.TestCase):
+    def setUp(self):
+        self.scheduler = Scheduler()
+        self.scheduler._session_probe_ttl_seconds = 0
+
+    def test_normalize(self):
+        self.assertEqual(normalize_playback_guard_minutes(None), 20)
+        self.assertEqual(normalize_playback_guard_minutes(""), 20)
+        self.assertEqual(normalize_playback_guard_minutes("abc"), 20)
+        self.assertEqual(normalize_playback_guard_minutes(0), 0)
+        self.assertEqual(normalize_playback_guard_minutes("45"), 45)
+        self.assertEqual(normalize_playback_guard_minutes(-5), 0)
+        self.assertEqual(normalize_playback_guard_minutes(500), 120)
+
+    def test_zero_turns_the_guard_off_without_probing(self):
+        setting = FakeSetting()
+        setting.playback_guard_minutes = 0
+        with mock.patch("backend.scheduler.requests.get",
+                        return_value=response(content=SESSION_XML)) as get:
+            self.assertFalse(self.scheduler._defer_preroll_write(setting, "rotation"))
+            self.assertEqual(get.call_count, 0)
+
+    def test_turning_the_guard_off_releases_a_waiting_change(self):
+        setting = FakeSetting()
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=SESSION_XML)):
+            self.assertTrue(self.scheduler._defer_preroll_write(setting, "rotation"))
+        self.assertIsNotNone(self.scheduler.deferred_write_state())
+        setting.playback_guard_minutes = 0
+        self.assertFalse(self.scheduler._defer_preroll_write(setting, "rotation"))
+        self.assertIsNone(self.scheduler.deferred_write_state())
+
+    def test_a_shorter_window_releases_sooner(self):
+        setting = FakeSetting()
+        setting.playback_guard_minutes = 5
+        xml = b'<MediaContainer size="1"><Video sessionKey="7" type="movie"/></MediaContainer>'
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=xml)):
+            self.assertTrue(self.scheduler._defer_preroll_write(setting, "rotation"))
+            self.assertEqual(self.scheduler.deferred_write_state()["window_minutes"], 5)
+            self.scheduler._session_first_seen["7"] -= datetime.timedelta(minutes=6)
+            self.assertFalse(self.scheduler._defer_preroll_write(setting, "rotation"))
+
+    def test_changing_the_window_drops_the_cached_count(self):
+        setting = FakeSetting()
+        self.scheduler._session_probe_ttl_seconds = 600
+        xml = b'<MediaContainer size="1"><Video sessionKey="7" type="movie"/></MediaContainer>'
+        with mock.patch("backend.scheduler.requests.get", return_value=response(content=xml)) as get:
+            self.assertTrue(self.scheduler._defer_preroll_write(setting, "rotation"))
+            self.scheduler._session_first_seen["7"] -= datetime.timedelta(minutes=10)
+            setting.playback_guard_minutes = 5
+            self.assertFalse(self.scheduler._defer_preroll_write(setting, "rotation"))
+            self.assertEqual(get.call_count, 2)
+
+
+class TrailerRetentionGuardTests(unittest.TestCase):
+    """Retention must never delete a file that is sitting in the list Plex is
+    currently serving - the path would remain in Plex's preference with nothing
+    behind it, which is the same hang by a different route."""
+
+    def test_applied_paths_start_empty(self):
+        self.assertEqual(Scheduler()._applied_local_paths, set())
+
+    def test_membership_is_compared_on_absolute_paths(self):
+        scheduler = Scheduler()
+        scheduler._applied_local_paths = {os.path.abspath(os.path.join("videos", "trailer.mp4"))}
+
+        self.assertIn(
+            os.path.abspath(os.path.join("videos", "trailer.mp4")),
+            scheduler._applied_local_paths,
+        )
+        self.assertNotIn(
+            os.path.abspath(os.path.join("videos", "other.mp4")),
+            scheduler._applied_local_paths,
+        )
+
+
+class GenreFeatureRemovalTests(unittest.TestCase):
+    def test_genre_playback_monitor_is_gone(self):
+        self.assertFalse(hasattr(Scheduler(), "_apply_genre_mapping_from_playback"))
+
+    def test_scheduler_module_has_no_genre_mapping_references(self):
+        # Genre is back, deliberately, as a sequence-block condition answered
+        # by the Jellyfin/Emby plugin (see sequence_conditions / media_genres).
+        # What must stay gone is the old Plex genre-mapping chain.
+        import backend.scheduler as scheduler_module
+
+        with open(scheduler_module.__file__, encoding="utf-8") as handle:
+            source = handle.read().lower()
+        for remnant in ("genremap", "genre_map", "_genre_mapping", "recent_genre"):
+            self.assertNotIn(remnant, source)
+
+
+if __name__ == "__main__":
+    unittest.main()

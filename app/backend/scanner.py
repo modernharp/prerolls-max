@@ -1,0 +1,480 @@
+"""
+Filesystem scanner for Prerolls Max preroll files.
+
+Reconciles DB Preroll rows against the actual files in PREROLLS_DIR:
+  - Rewrites `path` when a row's file lives somewhere else than the DB claims
+    (this is the Windows -> Docker migration fix: paths like C:\\... are
+     replaced with the real /data/prerolls/... path).
+  - Regenerates missing thumbnails.
+  - Creates new Preroll rows for files that appear on disk without an upload
+    (e.g. dropped into a category folder manually, or copied in by an external tool).
+  - Assigns new prerolls to a category based on their parent folder name when an
+    existing category matches. Files in the prerolls root or in folders with no
+    matching category are left uncategorized (category_id = None).
+
+Run at startup, after JSON restore, and on demand via POST /prerolls/rescan.
+"""
+
+import os
+from typing import Optional, Callable
+
+from sqlalchemy.orm import Session
+
+from backend import models
+from backend.preroll_files import ensure_preroll_category
+
+VALID_VIDEO_EXTENSIONS = {
+    '.mp4', '.mkv', '.mov', '.avi', '.m4v', '.webm', '.wmv', '.flv', '.ts'
+}
+
+# Subdirectory basenames the scanner should never recurse into.
+# node_modules / bgutil-provider hold the YouTube PO-token provider: thousands of
+# files including TypeScript sources (*.ts / *.d.ts). Since '.ts' is also a valid
+# video extension (MPEG-TS), those were being treated as prerolls and each spawned
+# a failing FFmpeg thumbnail job — enough to make Prerolls Max unresponsive when the
+# provider lands inside the prerolls folder. Never descend into them.
+SKIP_DIRS = {'thumbnails', 'temp', 'nexup_temp', 'tmp', '__pycache__',
+             'node_modules', 'bgutil-provider'}
+
+
+def _iter_preroll_files(prerolls_dir: str):
+    """Yield (abs_path, parent_folder_basename, filename) for every valid video file."""
+    if not prerolls_dir or not os.path.isdir(prerolls_dir):
+        return
+    prerolls_abs = os.path.abspath(prerolls_dir)
+    for root, dirs, files in os.walk(prerolls_abs):
+        # Prune skipped subdirectories in-place so os.walk does not recurse into them
+        dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS and not d.startswith('.')]
+        for f in files:
+            if f.startswith('.'):
+                continue
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in VALID_VIDEO_EXTENSIONS:
+                continue
+            # '*.d.ts' splits to ext '.ts' (MPEG-TS) but is a TypeScript
+            # declaration file, never a video — skip it explicitly so a stray
+            # node_modules tree outside SKIP_DIRS can't seed junk prerolls.
+            if f.lower().endswith('.d.ts'):
+                continue
+            abs_path = os.path.join(root, f)
+            # Parent folder name relative to prerolls_dir: '' for the root itself
+            try:
+                rel = os.path.relpath(root, prerolls_abs)
+            except Exception:
+                rel = ''
+            parent = '' if rel == '.' else rel.split(os.sep)[0]
+            yield abs_path, parent, f
+
+
+def _thumbnail_resolves(thumbnail_field: Optional[str], data_dir: Optional[str],
+                       prerolls_dir: Optional[str]) -> bool:
+    """Best-effort check that the stored thumbnail string points at a real file."""
+    if not thumbnail_field:
+        return False
+    candidates = []
+    if data_dir:
+        candidates.append(os.path.join(data_dir, thumbnail_field))
+    if prerolls_dir:
+        candidates.append(os.path.join(os.path.dirname(prerolls_dir), thumbnail_field))
+        candidates.append(os.path.join(prerolls_dir, thumbnail_field))
+    candidates.append(thumbnail_field)  # absolute path stored verbatim
+    return any(os.path.isfile(c) for c in candidates if c)
+
+
+def reconcile_prerolls(
+    db: Session,
+    prerolls_dir: str,
+    data_dir: Optional[str] = None,
+    generate_thumbnail_fn: Optional[Callable] = None,
+    file_log: Optional[Callable] = None,
+    delete_missing: bool = False,
+    dedupe: bool = False,
+    auto_prune_missing: bool = False,
+    exclude_trees: Optional[list] = None,
+    ignored_path_keys: Optional[set] = None,
+) -> dict:
+    """
+    Reconcile DB Preroll rows against on-disk files. See module docstring.
+
+    `generate_thumbnail_fn(preroll, video_abs_path, category_name) -> Optional[str]`
+    is injected to avoid a circular import with main.py.
+
+    delete_missing: force-remove every row whose file is gone (user-initiated,
+        no safety threshold).
+    auto_prune_missing: automatically remove rows whose file is gone, BUT only
+        when it's safe. A missing file whose folder is still there and not
+        empty was deleted, and is removed however many there are. Files whose
+        folder is gone or empty could be an offline share: those are removed
+        only when files were found on disk and they are a small minority. This
+        is what makes deletions in Explorer self-heal without prompting the
+        user, while protecting against wiping the library if a network share
+        blips.
+    exclude_trees: directory trees the scanner must leave alone (the NeX-Up
+        trailer storage). Files there are owned by NeX-Up, which registers
+        them under its system categories itself; when the scanner indexed
+        them it created a second, Uncategorized row per trailer. Rows whose
+        path lives under an excluded tree are skipped entirely (so legit
+        NeX-Up rows are never counted missing/pruned), and rows the scanner
+        itself previously created there (managed=True, no category) are
+        removed.
+    ignored_path_keys: normcase/normpath'd absolute paths the user removed from
+        the library while choosing to keep the file on disk. Without this the
+        scanner would re-index them on the very next run and the removal would
+        appear to undo itself.
+    """
+    log = file_log or (lambda *a, **k: None)
+    stats = {
+        "files_on_disk": 0,
+        "db_rows_total": 0,
+        "paths_updated": 0,
+        "thumbnails_generated": 0,
+        "missing_files": 0,
+        "duplicate_rows": 0,
+        "new_prerolls": 0,
+        "categories_assigned": 0,
+        "deleted_missing": 0,
+        "deduped_rows": 0,
+        "missing_not_pruned": 0,
+        "storage_maybe_offline": False,
+        "excluded_files": 0,
+        "excluded_rows_cleaned": 0,
+        "ignored_files": 0,
+        "errors": [],
+    }
+    _ignored = ignored_path_keys or set()
+
+    if not prerolls_dir or not os.path.isdir(prerolls_dir):
+        log(f"Scanner: prerolls dir '{prerolls_dir}' not found; skipping", level="WARNING")
+        return stats
+
+    # Normalize exclusion trees to prefix form. Guard: never exclude the
+    # prerolls root itself (a misconfigured NeX-Up storage path pointed at the
+    # library root would otherwise silently disable the whole scan).
+    _root_norm = os.path.normcase(os.path.normpath(os.path.abspath(prerolls_dir)))
+    _exclude_prefixes = []
+    for t in (exclude_trees or []):
+        if not t:
+            continue
+        tn = os.path.normcase(os.path.normpath(os.path.abspath(t)))
+        if tn == _root_norm or _root_norm.startswith(tn + os.sep):
+            log(f"Scanner: NOT excluding '{t}' — it contains the prerolls root", level="WARNING")
+            continue
+        _exclude_prefixes.append(tn + os.sep)
+
+    def _is_excluded(pth) -> bool:
+        if not _exclude_prefixes or not pth:
+            return False
+        try:
+            pn = os.path.normcase(os.path.normpath(os.path.abspath(pth)))
+        except Exception:
+            return False
+        return any(pn.startswith(pref) for pref in _exclude_prefixes)
+
+    def _norm_path(pth):
+        try:
+            return os.path.normcase(os.path.normpath(os.path.abspath(pth)))
+        except Exception:
+            return pth
+
+    # 1. Build on-disk index. by_parent_filename is the primary lookup
+    #    (category folder + filename); by_filename is the unique-name fallback.
+    by_parent_filename = {}   # (parent_lower, filename_lower) -> abs_path
+    by_filename = {}          # filename_lower -> [abs_path, ...]
+    parent_by_path = {}       # abs_path -> top-level folder name
+    for abs_path, parent, filename in _iter_preroll_files(prerolls_dir):
+        if _is_excluded(abs_path):
+            stats["excluded_files"] += 1
+            continue
+        # Removed from the library, kept on disk — do not resurrect it.
+        if _ignored and _norm_path(abs_path) in _ignored:
+            stats["ignored_files"] += 1
+            continue
+        stats["files_on_disk"] += 1
+        key = (parent.lower(), filename.lower())
+        by_parent_filename.setdefault(key, abs_path)
+        by_filename.setdefault(filename.lower(), []).append(abs_path)
+        parent_by_path[abs_path] = parent.lower()
+
+    # 2. Index categories so we can look them up by name (folder hint) and by id (path hint).
+    all_categories = db.query(models.Category).all()
+    cat_by_name_lower = {c.name.lower(): c for c in all_categories}
+    cat_by_id = {c.id: c for c in all_categories}
+
+    # 3. Reconcile existing DB rows.
+    all_prerolls = db.query(models.Preroll).all()
+    stats["db_rows_total"] = len(all_prerolls)
+    matched_paths = set()
+
+    # Every path already claimed by a DB row (normalized). Used in step 4 to
+    # avoid creating an orphan duplicate for a file a row already points at but
+    # that the folder-hint heuristic below failed to match (e.g. a filename that
+    # is not unique across category folders). Without this guard, every scan
+    # re-creates the same duplicate rows, so Dedupe never sticks.
+    existing_db_paths = {_norm_path(p.path) for p in all_prerolls if p.path}
+
+    for p in all_prerolls:
+        if not p.filename:
+            continue
+
+        # Rows living under an excluded (NeX-Up) tree are not the scanner's to
+        # reconcile. Clean up the duplicates the scanner itself created there
+        # in earlier versions (managed=True with no category — NeX-Up's own
+        # rows are managed=False and categorized); leave everything else alone.
+        if p.path and _is_excluded(p.path):
+            if p.managed and p.category_id is None:
+                try:
+                    db.delete(p)
+                    stats["excluded_rows_cleaned"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"cleanup of excluded row {p.id} failed: {e}")
+            continue
+
+        # Hint: prefer the category folder that matches this preroll's category
+        parent_hint = ''
+        cat = cat_by_id.get(p.category_id) if p.category_id else None
+        if cat:
+            parent_hint = cat.name.lower()
+
+        actual = by_parent_filename.get((parent_hint, p.filename.lower()))
+        if not actual:
+            # Fallback to filename-only when it's unique on disk
+            candidates = by_filename.get(p.filename.lower(), [])
+            if len(candidates) == 1:
+                actual = candidates[0]
+
+        if actual:
+            matched_paths.add(actual)
+            # A moved file can already have a DB row from a previous root-level
+            # scan. Backfill only truly uncategorized rows when their new top-level
+            # folder matches an existing category; never replace deliberate tags.
+            if p.category_id is None and not (p.categories or []):
+                folder_cat = cat_by_name_lower.get(parent_by_path.get(actual, ""))
+                if folder_cat is not None and ensure_preroll_category(p, folder_cat):
+                    cat = folder_cat
+                    stats["categories_assigned"] += 1
+            try:
+                current_norm = os.path.abspath(p.path) if p.path else None
+                actual_norm = os.path.abspath(actual)
+                if current_norm != actual_norm:
+                    p.path = actual
+                    stats["paths_updated"] += 1
+            except Exception as e:
+                stats["errors"].append(f"path update failed for preroll {p.id}: {e}")
+
+            # Regenerate thumbnail if missing or its file isn't there
+            if generate_thumbnail_fn and not _thumbnail_resolves(p.thumbnail, data_dir, prerolls_dir):
+                try:
+                    cat_name = cat.name if cat else None
+                    thumb = generate_thumbnail_fn(p, actual, cat_name)
+                    if thumb:
+                        p.thumbnail = thumb
+                        stats["thumbnails_generated"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"thumbnail generation failed for preroll {p.id}: {e}")
+        else:
+            stats["missing_files"] += 1
+
+    # 4. Create rows for orphan files (on disk but not in DB).
+    for (parent_lower, _filename_lower), abs_path in by_parent_filename.items():
+        if abs_path in matched_paths:
+            continue
+        # Skip files a DB row already owns even if the heuristic above didn't
+        # match it — prevents re-creating duplicate rows on every scan.
+        if _norm_path(abs_path) in existing_db_paths:
+            continue
+        try:
+            cat = cat_by_name_lower.get(parent_lower) if parent_lower else None
+            filename = os.path.basename(abs_path)
+            # managed=True marks the file as living in Prerolls Max's library folder
+            # (so category moves/renames may relocate it). It is deliberately NOT
+            # a licence to delete: these files are frequently the user's own,
+            # dropped into a category folder by hand and merely indexed here.
+            new_p = models.Preroll(
+                filename=filename,
+                path=abs_path,
+                category_id=cat.id if cat else None,
+                managed=True,
+            )
+            if cat is not None:
+                new_p.categories = [cat]
+            db.add(new_p)
+            db.flush()
+            if generate_thumbnail_fn:
+                try:
+                    thumb = generate_thumbnail_fn(new_p, abs_path, cat.name if cat else None)
+                    if thumb:
+                        new_p.thumbnail = thumb
+                        stats["thumbnails_generated"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"thumbnail generation failed for new file {filename}: {e}")
+            stats["new_prerolls"] += 1
+        except Exception as e:
+            stats["errors"].append(f"new preroll creation failed for {abs_path}: {e}")
+
+    # Optional cleanup passes — destructive, opt-in. Skipped on the default
+    # startup scan; the rescan endpoint exposes these as separate buttons.
+    if delete_missing:
+        # Re-query because we may have added new rows above. A row is "missing" when
+        # we didn't match it to a file on disk (its path wasn't recorded in
+        # matched_paths) AND its current path doesn't resolve to a real file.
+        for p in db.query(models.Preroll).all():
+            try:
+                actual_path = os.path.abspath(p.path) if p.path else None
+                if actual_path and actual_path in matched_paths:
+                    continue
+                if p.path and os.path.exists(p.path):
+                    continue
+                db.delete(p)
+                stats["deleted_missing"] += 1
+            except Exception as e:
+                stats["errors"].append(f"delete missing failed for preroll {getattr(p, 'id', '?')}: {e}")
+
+    elif auto_prune_missing:
+        # Self-heal: remove rows whose file is genuinely gone (deleted/moved in
+        # Explorer), so the user doesn't have to click "Remove Missing Rows".
+        # BUT guard hard against storage outages — if a network share blips, every
+        # path stops resolving and a naive prune would wipe the whole library.
+        prunable = []
+        try:
+            # Videos just brought over from NeXroll whose folder isn't mapped
+            # yet (Settings > Moving from NeXroll) wait for the person to point
+            # Prerolls Max at them.
+            from backend.nexroll_import import held_ids
+            held = held_ids()
+        except Exception:
+            held = set()
+        for p in db.query(models.Preroll).all():
+            try:
+                if not p.path or p.id in held:
+                    continue
+                actual_path = os.path.abspath(p.path)
+                if actual_path in matched_paths:
+                    continue
+                if os.path.exists(p.path):
+                    continue
+                prunable.append(p)
+            except Exception:
+                continue
+        total_rows = db.query(models.Preroll).count()
+
+        # Tell deletions from outages by the folder each missing file lived in.
+        # A share or drive that drops takes its folders with it, or leaves an
+        # empty mount point; a folder that is still there with something in it
+        # is plainly online, so its missing files were deleted. Only files whose
+        # folder is gone or empty are unclear, and only those face the outage
+        # threshold. Before this, deleting more than a quarter of the library in
+        # place looked like an outage and nothing was ever cleaned up.
+        folder_online = {}
+
+        def _folder_has_entries(path) -> bool:
+            folder = os.path.dirname(os.path.abspath(path))
+            if folder not in folder_online:
+                try:
+                    with os.scandir(folder) as entries:
+                        folder_online[folder] = any(True for _ in entries)
+                except OSError:
+                    folder_online[folder] = False
+            return folder_online[folder]
+
+        storage_online = stats["files_on_disk"] > 0
+        deleted = [p for p in prunable if storage_online and _folder_has_entries(p.path)]
+        deleted_ids = {id(p) for p in deleted}
+        unclear = [p for p in prunable if id(p) not in deleted_ids]
+        # Safe to auto-remove unclear rows only when files were found on disk
+        # (storage is online) AND they are a small minority. Threshold: up to
+        # 25% of rows, or 10 files, whichever is larger.
+        outage_suspected = (not storage_online) or (
+            len(unclear) > max(10, int(total_rows * 0.25))
+        )
+        to_prune = deleted + ([] if outage_suspected else unclear)
+        if unclear and outage_suspected:
+            stats["missing_not_pruned"] = len(unclear)
+            stats["storage_maybe_offline"] = True
+            log(
+                f"Scanner: {len(unclear)} of {total_rows} preroll file(s) not found, in folders "
+                f"that are gone or empty (files_on_disk={stats['files_on_disk']}). Storage may be "
+                f"offline; NOT auto-removing those rows. They will relink automatically when "
+                f"storage returns, or can be removed with Remove Missing Rows.",
+                level="WARNING",
+            )
+        for p in to_prune:
+            try:
+                db.delete(p)
+                stats["deleted_missing"] += 1
+            except Exception as e:
+                stats["errors"].append(f"auto-prune failed for preroll {getattr(p, 'id', '?')}: {e}")
+        if stats["deleted_missing"]:
+            log(f"Scanner: auto-removed {stats['deleted_missing']} row(s) for files deleted from disk")
+
+    if dedupe:
+        # Group remaining prerolls by normalized path; keep the lowest-id row and
+        # delete the rest. Multiple DB rows pointing at the same file are an
+        # artifact of historical import/sync races.
+        seen_by_path = {}
+        for p in db.query(models.Preroll).order_by(models.Preroll.id).all():
+            if not p.path:
+                continue
+            try:
+                key = os.path.normcase(os.path.normpath(p.path))
+            except Exception:
+                key = p.path
+            keeper = seen_by_path.get(key)
+            if keeper is None:
+                seen_by_path[key] = p
+                continue
+            try:
+                # Carry over any m2m tags the duplicate had that the keeper lacks
+                keeper_cat_ids = {c.id for c in (keeper.categories or [])}
+                for c in (p.categories or []):
+                    if c.id not in keeper_cat_ids:
+                        keeper.categories = (keeper.categories or []) + [c]
+                        keeper_cat_ids.add(c.id)
+                db.delete(p)
+                stats["deduped_rows"] += 1
+            except Exception as e:
+                stats["errors"].append(f"dedupe failed for preroll {p.id}: {e}")
+
+    # Recount missing + duplicate rows against the current DB state. These
+    # power the dashboard health banner via _set_last_scan_stats(), so they
+    # need to reflect *post-cleanup* reality — otherwise after a successful
+    # delete_missing the banner keeps showing the old count until the next
+    # full rescan. Reconcile-pass counts above are overwritten on purpose.
+    try:
+        current_missing = 0
+        current_duplicates = 0
+        seen_paths = set()
+        for p in db.query(models.Preroll).all():
+            if p.path and not os.path.exists(p.path):
+                current_missing += 1
+                continue
+            if not p.path:
+                continue
+            try:
+                key = os.path.normcase(os.path.normpath(p.path))
+            except Exception:
+                key = p.path
+            if key in seen_paths:
+                current_duplicates += 1
+            else:
+                seen_paths.add(key)
+        stats["missing_files"] = current_missing
+        stats["duplicate_rows"] = current_duplicates
+    except Exception as e:
+        stats["errors"].append(f"post-scan health recount failed: {e}")
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        log(f"Scanner: commit failed: {e}", level="ERROR")
+        stats["errors"].append(f"commit failed: {e}")
+
+    log(
+        f"Scanner: {stats['files_on_disk']} files on disk, {stats['db_rows_total']} db rows, "
+        f"{stats['paths_updated']} paths updated, {stats['thumbnails_generated']} thumbnails generated, "
+        f"{stats['new_prerolls']} new rows, {stats['categories_assigned']} categories assigned, "
+        f"{stats['missing_files']} missing, "
+        f"{stats['duplicate_rows']} duplicates, "
+        f"{stats['deleted_missing']} deleted missing, {stats['deduped_rows']} deduped"
+    )
+    return stats

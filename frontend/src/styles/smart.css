@@ -1,0 +1,122 @@
+/* Smart features: rules, never-play list, media tools, watch folders, stats. */
+
+/* ---------- How Prerolls Max picks ---------- */
+.decision-order { margin-bottom: var(--space-5); display: flex; flex-direction: column; gap: var(--space-3); }
+.decision-steps {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.decision-steps li {
+  display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-3);
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
+}
+.decision-steps li.current { border-color: var(--accent); background: var(--accent-soft); }
+.decision-order > p { margin: 0; }
+.order-num {
+  flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent-text); font-weight: 700; font-size: var(--text-sm);
+}
+.decision-steps li.current .order-num { background: var(--accent); color: var(--on-accent); }
+
+/* ---------- Rules ---------- */
+.rule-list { list-style: none; padding: 0; }
+.rule-card { align-items: flex-start; flex-wrap: nowrap; }
+.rule-card > .grow { flex: 1 1 auto; min-width: 0; }
+.rules-fallback { margin-top: var(--space-3); }
+.rule-card .order-num { margin-top: 2px; }
+.rule-problem {
+  display: flex; gap: 6px; align-items: flex-start; margin: var(--space-2) 0 0;
+  color: var(--warning); font-size: var(--text-sm); font-weight: 600;
+}
+.rule-problem svg { flex: none; margin-top: 2px; }
+.chip-note { margin-left: 6px; font-size: 0.75rem; font-weight: 500; opacity: 0.85; }
+.badge.removable { cursor: pointer; gap: 4px; }
+.kids-box { padding: var(--space-3); border-radius: var(--radius); border: 1px dashed var(--border-strong); }
+.kids-box.on { border-style: solid; border-color: var(--accent); background: var(--accent-soft); }
+.picked-list { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 2px; }
+.picked-list li > * { vertical-align: middle; }
+.picked-list li { display: list-item; }
+.picked-list li .grow { display: inline-block; min-width: 50%; }
+.pick-list {
+  list-style: none; margin: 0; padding: var(--space-2); max-height: 240px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+.pick-list li { padding: 2px 0; }
+.sticky-actions {
+  position: sticky; bottom: 0; z-index: 10; padding: var(--space-3) 0; background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.exclusion-grid { display: grid; gap: var(--space-3); grid-template-columns: minmax(140px, 180px) minmax(0, 2fr) minmax(0, 1fr); align-items: start; }
+.input-short { max-width: 140px; }
+
+/* ---------- Playlist "Only if" rows: kind | value | not | remove ---------- */
+.rule-row {
+  display: grid; gap: var(--space-2) var(--space-3); align-items: center;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr) auto auto;
+}
+.rule-row > .field { gap: 0; }
+.rule-row .checkbox { white-space: nowrap; }
+
+/* ---------- Media tools ---------- */
+.loudness-summary { margin-bottom: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+.loudness-summary p { margin: 0; }
+.media-bar { flex-wrap: wrap; }
+.media-bar-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.versions { border-top: 1px solid var(--border); padding-top: var(--space-2); }
+.versions p { margin: 0 0 var(--space-1); }
+.version-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.version-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 2px var(--space-1); }
+.version-name { grid-column: 1 / -1; font-weight: 600; }
+.version-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.version-list .btn-icon { width: 36px; min-height: 36px; }
+.weight-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-2); align-items: center; }
+.weight-value { grid-column: 1 / -1; justify-self: start; }
+.range { width: 100%; accent-color: var(--accent); min-height: var(--touch); }
+
+/* ---------- Watch folders ---------- */
+.watch-card { list-style: none; }
+.watch-path { overflow-wrap: anywhere; font-size: var(--text-sm); }
+.waiting { padding: var(--space-2) var(--space-3); background: var(--surface-2); border-radius: var(--radius); }
+.waiting p { margin: 0 0 var(--space-1); }
+
+/* ---------- What played ---------- */
+.stat-grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); align-items: start; margin-bottom: var(--space-4); }
+.table-note { margin-top: var(--space-2); }
+.stat-card { display: flex; flex-direction: column; gap: var(--space-3); }
+.hero-stat { justify-content: center; }
+.hero-number { font-size: 2.75rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.bar-list, .rank-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.bar-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label value" "track track"; gap: 2px var(--space-2); align-items: center; }
+.bar-label { grid-area: label; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-sm); }
+.bar-track { grid-area: track; display: block; height: 8px; }
+.bar-fill { display: block; height: 100%; min-width: 4px; border-radius: 0 4px 4px 0; background: var(--accent); }
+.bar-value { grid-area: value; text-align: right; font-variant-numeric: tabular-nums; font-size: var(--text-sm); }
+.rank-list li { display: flex; gap: var(--space-2); align-items: baseline; border-bottom: 1px solid var(--border); padding-bottom: var(--space-1); }
+.rank-list li:last-child { border-bottom: 0; }
+.plays-table td { vertical-align: top; }
+
+/* ---------- Home: missed intros ---------- */
+.health-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.health-card { display: flex; flex-direction: column; gap: var(--space-2); border-left: 4px solid var(--border-strong); }
+.health-card.warning { border-left-color: var(--warning); }
+.health-card p { margin: 0; }
+.health-head { display: flex; gap: var(--space-2); align-items: center; }
+.health-fix { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-2) var(--space-3); background: var(--surface-2); border-radius: var(--radius); }
+.health-fix svg { flex: none; margin-top: 3px; }
+
+@media (max-width: 899px) {
+  .decision-steps { grid-template-columns: 1fr 1fr; }
+  .exclusion-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 599px) {
+  .decision-steps { grid-template-columns: 1fr; }
+  .rule-row { grid-template-columns: 1fr auto; }
+  .rule-row > :nth-child(1), .rule-row > :nth-child(2) { grid-column: 1 / -1; }
+  .media-bar .grow { flex-basis: 100%; }
+  .rule-card { flex-wrap: wrap; }
+  .rule-card > .grow { flex-basis: calc(100% - 48px); }
+  .rule-card .schedule-actions { width: 100%; justify-content: flex-end; }
+}
+
+/* Long status badges on narrow video cards wrap instead of overflowing. */
+.video-meta .badge { white-space: normal; text-align: left; border-radius: 12px; }

@@ -1,0 +1,825 @@
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text, Float, Table, event
+from sqlalchemy.orm import relationship
+from backend.database import Base
+import datetime
+import json
+from backend.timeutil import utcnow
+
+# Association (many-to-many) between prerolls and categories
+preroll_categories = Table(
+    "preroll_categories",
+    Base.metadata,
+    Column("preroll_id", Integer, ForeignKey("prerolls.id", ondelete="CASCADE"), primary_key=True),
+    Column("category_id", Integer, ForeignKey("categories.id", ondelete="CASCADE"), primary_key=True),
+)
+
+class Preroll(Base):
+    __tablename__ = "prerolls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, index=True)
+    display_name = Column(String, nullable=True)  # Optional UI/display label separate from disk filename
+    path = Column(String)
+    thumbnail = Column(String)
+    tags = Column(Text)  # JSON array of tags
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    description = Column(Text, nullable=True)
+    duration = Column(Float, nullable=True)  # Duration in seconds
+    file_size = Column(Integer, nullable=True)  # File size in bytes
+    # True = the file lives in Prerolls Max's library folder, so Prerolls Max may move and
+    # rename it (category moves, renames). False = externally mapped; leave it
+    # alone entirely. This does NOT authorize deleting the file: the scanner sets
+    # managed=True on anything it finds in the library, including files the user
+    # put there, so deletion is gated on an explicit request instead (see
+    # delete_preroll's delete_file parameter).
+    managed = Column(Boolean, default=True)
+    upload_date = Column(DateTime, default=utcnow)
+    community_preroll_id = Column(String, nullable=True, index=True)  # ID from community prerolls library
+    exclude_from_matching = Column(Boolean, default=False)  # Exclude from auto-matching to community prerolls
+    file_hash = Column(String, nullable=True, index=True)  # SHA256 hash for duplicate detection
+    enabled = Column(Boolean, default=True)  # When False, scheduler skips this preroll in random / category picks. Set by NeX-Up trailer toggle to disable a trailer's preroll record everywhere it could be picked.
+    # How often a random pick chooses this intro, 1 (rarely) to 10 (often); 5 is normal.
+    weight = Column(Integer, default=5)
+    # Loudness as measured by EBU R128 (ffmpeg loudnorm): integrated LUFS,
+    # true peak in dBTP and loudness range in LU. NULL until checked.
+    loudness_lufs = Column(Float, nullable=True)
+    loudness_peak = Column(Float, nullable=True)
+    loudness_lra = Column(Float, nullable=True)
+    loudness_checked_at = Column(DateTime, nullable=True)
+    # A version made from another intro (normalized loudness, 1080p SDR...):
+    # the original's id and a short label. NULL for originals.
+    version_of = Column(Integer, nullable=True, index=True)
+    version_label = Column(String, nullable=True)
+
+    category = relationship("Category")
+    # Additional categories (many-to-many via preroll_categories)
+    categories = relationship("Category", secondary="preroll_categories")
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    description = Column(Text)
+    plex_mode = Column(String, default="shuffle")  # 'shuffle' or 'playlist' for Plex delimiter behavior
+    apply_to_plex = Column(Boolean, default=False)  # Whether this category should be applied to Plex
+    is_system = Column(Boolean, default=False)  # System categories cannot be edited/deleted (e.g. Movie trailers)
+    # Which built-in collection this is ("movie_trailers"...); see system_collections.py.
+    system_key = Column(String, nullable=True, index=True)
+    # Don't play the same intro from this collection again within this many hours (0 = no limit).
+    cooldown_hours = Column(Integer, default=0)
+    # Optional: reverse relation to list all prerolls tagged with this category (view-only)
+    prerolls = relationship("Preroll", secondary="preroll_categories", viewonly=True)
+
+class IgnoredPath(Base):
+    """A file the user removed from the library but chose to keep on disk.
+
+    The scanner indexes anything it finds under the prerolls folder, so without
+    this the removed preroll would simply reappear on the next scan. Entries are
+    dropped automatically once a Preroll row points at the path again (i.e. the
+    user deliberately re-imported it).
+    """
+    __tablename__ = "ignored_paths"
+
+    id = Column(Integer, primary_key=True, index=True)
+    path = Column(String)  # As recorded, for display
+    path_key = Column(String, unique=True, index=True)  # normcase(normpath(abspath))
+    filename = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class GenreMap(Base):
+    __tablename__ = "genre_maps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    genre = Column(String, unique=True, index=True)  # e.g., "Horror", "Comedy" from Plex metadata
+    genre_norm = Column(String, unique=True, index=True, nullable=True)  # canonical normalized key (lowercased, synonyms applied)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
+
+    # When this Plex genre is detected, apply this category's prerolls
+    category = relationship("Category")
+class Schedule(Base):
+    __tablename__ = "schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)  # Schedule name
+    type = Column(String)  # monthly, yearly, holiday, custom
+    start_date = Column(DateTime)
+    end_date = Column(DateTime, nullable=True)  # Optional for ongoing schedules
+    category_id = Column(Integer, ForeignKey("categories.id"))
+    fallback_category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)  # Fallback category
+    playlist = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    last_run = Column(DateTime, nullable=True)
+    next_run = Column(DateTime, nullable=True)
+    recurrence_pattern = Column(String, nullable=True)  # For cron-like patterns
+    preroll_ids = Column(Text, nullable=True)  # JSON array of preroll IDs for playlists
+    sequence = Column(Text, nullable=True)  # JSON describing stacked prerolls (e.g., random blocks + fixed)
+    color = Column(String, nullable=True)  # Custom color for calendar display (hex format)
+    blend_enabled = Column(Boolean, default=False)  # Allow blending with other overlapping schedules
+    priority = Column(Integer, default=5)  # Priority level 1-10 (higher wins during overlap)
+    exclusive = Column(Boolean, default=False)  # When active, this schedule wins exclusively (no blending)
+    # Holiday tracking fields for auto-updating variable date holidays
+    holiday_name = Column(String, nullable=True)  # e.g., "Thanksgiving", "Easter"
+    holiday_country = Column(String, nullable=True)  # e.g., "US", "CA"
+    # When this schedule was created from a saved sequence, remember which one
+    # so edits to that saved sequence can be propagated back into this
+    # schedule's embedded `sequence` copy. Null for schedules built ad-hoc.
+    source_sequence_id = Column(Integer, nullable=True)
+
+    category = relationship("Category", foreign_keys=[category_id])
+    fallback_category = relationship("Category", foreign_keys=[fallback_category_id])
+
+class SavedSequence(Base):
+    __tablename__ = "saved_sequences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)  # Sequence name
+    description = Column(Text, nullable=True)  # Optional description
+    blocks = Column(Text)  # JSON array of sequence blocks
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+    
+    def get_blocks(self):
+        """Parse and return blocks as list"""
+        try:
+            return json.loads(self.blocks) if self.blocks else []
+        except:
+            return []
+    
+    def set_blocks(self, blocks_list):
+        """Set blocks from list"""
+        try:
+            self.blocks = json.dumps(blocks_list) if blocks_list else "[]"
+            return True
+        except:
+            return False
+
+class HolidayPreset(Base):
+    __tablename__ = "holiday_presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    description = Column(Text)
+    month = Column(Integer)  # 1-12 (legacy single-day support)
+    day = Column(Integer)  # 1-31 (legacy single-day support)
+    start_month = Column(Integer, nullable=True)  # 1-12 (for date ranges)
+    start_day = Column(Integer, nullable=True)  # 1-31 (for date ranges)
+    end_month = Column(Integer, nullable=True)  # 1-12 (for date ranges)
+    end_day = Column(Integer, nullable=True)  # 1-31 (for date ranges)
+    is_recurring = Column(Boolean, default=True)
+    category_id = Column(Integer, ForeignKey("categories.id"))
+
+    category = relationship("Category")
+
+class CommunityTemplate(Base):
+    __tablename__ = "community_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)
+    description = Column(Text)
+    author = Column(String)
+    template_data = Column(Text)  # JSON string containing schedule data
+    category = Column(String)  # Template category (e.g., "Holiday", "Seasonal", "Custom")
+    tags = Column(Text)  # JSON array of tags
+    downloads = Column(Integer, default=0)
+    rating = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=utcnow)
+    is_public = Column(Boolean, default=True)
+
+
+class TrailerGenres:
+    """genre_list() for trailer rows that store genres as a JSON list."""
+
+    def genre_list(self):
+        try:
+            value = json.loads(self.genres) if self.genres else []
+            return [str(g) for g in value] if isinstance(value, list) else []
+        except Exception:
+            return []
+
+
+class ComingSoonTrailer(TrailerGenres, Base):
+    """NeX-Up: Tracks trailers for upcoming movies from Radarr"""
+    __tablename__ = "coming_soon_trailers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    radarr_movie_id = Column(Integer, index=True)  # Radarr's internal movie ID
+    tmdb_id = Column(Integer, index=True)  # TMDB ID for cross-referencing
+    imdb_id = Column(String, nullable=True)  # IMDB ID
+    certification = Column(String, nullable=True)  # Film/show age rating; unknown until metadata sync
+    genres = Column(Text, nullable=True)  # JSON list of the movie's genres; NULL until a sync supplies them
+    title = Column(String, index=True)  # Movie title
+    year = Column(Integer, nullable=True)  # Release year
+    overview = Column(Text, nullable=True)  # Movie description
+    release_date = Column(DateTime, nullable=True)  # Expected release date
+    release_type = Column(String, nullable=True)  # 'digital', 'physical', 'theatrical'
+    trailer_url = Column(String, nullable=True)  # Original YouTube URL
+    local_path = Column(String, nullable=True)  # Path to downloaded trailer file
+    file_size_mb = Column(Float, nullable=True)  # Size of downloaded trailer in MB
+    duration_seconds = Column(Integer, nullable=True)  # Trailer duration
+    resolution = Column(String, nullable=True)  # e.g., "1080p"
+    poster_url = Column(String, nullable=True)  # Movie poster URL
+    fanart_url = Column(String, nullable=True)  # Fanart/background URL
+    downloaded_at = Column(DateTime, nullable=True)  # When trailer was downloaded
+    status = Column(String, default='pending')  # 'pending', 'downloading', 'downloaded', 'error', 'expired'
+    error_message = Column(Text, nullable=True)  # Error details if download failed
+    is_enabled = Column(Boolean, default=True)  # User can enable/disable individual trailers
+    monitored = Column(Boolean, default=True)  # Whether the movie is monitored in Radarr
+    excluded_from_list = Column(Boolean, default=False)  # User can exclude from Coming Soon list generation
+    play_count = Column(Integer, default=0)  # How many times this trailer has been played
+    last_played = Column(DateTime, nullable=True)  # Last time trailer was played
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class ComingSoonTVTrailer(TrailerGenres, Base):
+    """NeX-Up: Tracks trailers for upcoming TV shows/seasons from Sonarr"""
+    __tablename__ = "coming_soon_tv_trailers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sonarr_series_id = Column(Integer, index=True)  # Sonarr's internal series ID
+    tvdb_id = Column(Integer, index=True)  # TVDB ID for cross-referencing
+    tmdb_id = Column(Integer, nullable=True)  # TMDB ID
+    imdb_id = Column(String, nullable=True)  # IMDB ID
+    certification = Column(String, nullable=True)  # Film/show age rating; unknown until metadata sync
+    genres = Column(Text, nullable=True)  # JSON list of the show's genres; NULL until a sync supplies them
+    title = Column(String, index=True)  # Show title
+    year = Column(Integer, nullable=True)  # Show start year
+    season_number = Column(Integer, nullable=True)  # Season number (1 for new shows)
+    overview = Column(Text, nullable=True)  # Show/season description
+    network = Column(String, nullable=True)  # Network/streaming service
+    release_date = Column(DateTime, nullable=True)  # Premiere date
+    release_type = Column(String, nullable=True)  # 'new_show' or 'new_season'
+    trailer_url = Column(String, nullable=True)  # Original YouTube URL
+    local_path = Column(String, nullable=True)  # Path to downloaded trailer file
+    file_size_mb = Column(Float, nullable=True)  # Size of downloaded trailer in MB
+    duration_seconds = Column(Integer, nullable=True)  # Trailer duration
+    resolution = Column(String, nullable=True)  # e.g., "1080p"
+    poster_url = Column(String, nullable=True)  # Show poster URL
+    fanart_url = Column(String, nullable=True)  # Fanart/background URL
+    downloaded_at = Column(DateTime, nullable=True)  # When trailer was downloaded
+    status = Column(String, default='pending')  # 'pending', 'downloading', 'downloaded', 'error', 'expired'
+    error_message = Column(Text, nullable=True)  # Error details if download failed
+    is_enabled = Column(Boolean, default=True)  # User can enable/disable individual trailers
+    monitored = Column(Boolean, default=True)  # Whether the show is monitored in Sonarr
+    excluded_from_list = Column(Boolean, default=False)  # User can exclude from Coming Soon list generation
+    play_count = Column(Integer, default=0)  # How many times this trailer has been played
+    last_played = Column(DateTime, nullable=True)  # Last time trailer was played
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class LibraryTrailer(TrailerGenres, Base):
+    """NeX-Up Library Trailers: a trailer for a movie already in the library.
+
+    Kept apart from ComingSoonTrailer on purpose. Coming Soon trailers are
+    removed once their movie arrives; these exist *because* it has arrived.
+    source 'local' is a trailer file sitting next to the movie, which Prerolls Max
+    only ever reads; 'download' is one Prerolls Max fetched into its own library
+    folder, and the only kind it will ever delete.
+    """
+    __tablename__ = "library_trailers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    radarr_movie_id = Column(Integer, index=True)
+    tmdb_id = Column(Integer, index=True, nullable=True)
+    certification = Column(String, nullable=True)  # Film/show age rating; unknown until metadata sync
+    title = Column(String, index=True)
+    year = Column(Integer, nullable=True)
+    genres = Column(Text, nullable=True)  # JSON list of genre names
+    added_to_library = Column(DateTime, nullable=True)  # when Radarr imported the movie
+    source = Column(String, default='download')  # 'local' | 'download'
+    status = Column(String, default='pending')  # 'available' | 'error'
+    error_message = Column(Text, nullable=True)
+    local_path = Column(String, nullable=True)
+    trailer_url = Column(String, nullable=True)
+    file_size_mb = Column(Float, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    poster_url = Column(String, nullable=True)
+    is_enabled = Column(Boolean, default=True)
+    # False once the movie stops matching the Library Trailers filters. The
+    # trailer is kept (and still plays); it is simply first in line to make
+    # room when the download limits are reached.
+    in_selection = Column(Boolean, default=True)
+    downloaded_at = Column(DateTime, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plex_url = Column(String)  # Chosen Plex server base URL (e.g., http://192.168.1.x:32400)
+    plex_token = Column(String)  # Plex auth token (manual/stable/OAuth)
+    jellyfin_url = Column(String)  # Jellyfin base URL (e.g., http://192.168.1.x:8096)
+    jellyfin_api_key = Column(String, nullable=True)  # Jellyfin API key for auth
+    emby_url = Column(String, nullable=True)  # Emby base URL (e.g., http://192.168.1.x:8096)
+    emby_api_key = Column(String, nullable=True)  # Emby API key for auth
+    # Community Prerolls settings
+    community_fair_use_accepted = Column(Boolean, default=False)  # Whether user accepted Fair Use Policy
+    community_fair_use_accepted_at = Column(DateTime, nullable=True)  # Timestamp of acceptance
+    community_server_url = Column(String, nullable=True)  # Custom community server URL (None = use default)
+    community_auto_refresh = Column(Boolean, default=False)  # Rebuild the community index once it is a week old (opt-in)
+    plex_client_id = Column(String, nullable=True)  # X-Plex-Client-Identifier
+    plex_server_base_url = Column(String, nullable=True)  # Best-resolved server URL (local preferred)
+    plex_server_machine_id = Column(String, nullable=True)  # Server machineIdentifier
+    plex_server_name = Column(String, nullable=True)  # Server name (friendly)
+    # App state
+    active_category = Column(Integer, ForeignKey("categories.id"))
+    timezone = Column(String, default="UTC")  # User's timezone (e.g., "America/New_York")
+    last_backup_at = Column(String, nullable=True)  # ISO time a backup was last produced
+    # v2 onboarding: True once the first-run setup wizard has been completed/skipped.
+    # Existing (v1.x) databases are marked complete during migration so upgraders
+    # are never forced through the wizard.
+    onboarding_complete = Column(Boolean, default=False)
+    # Set when the user asks to run the wizard again from Settings. Kept separate
+    # from onboarding_complete because a re-run happens on a configured install,
+    # where the "no prior configuration" test for a first run no longer holds.
+    onboarding_restart_requested = Column(Boolean, default=False)
+    updated_at = Column(DateTime, default=utcnow)
+    override_expires_at = Column(DateTime, nullable=True)
+    path_mappings = Column(Text, nullable=True)  # JSON list of {"local": "...", "plex": "..."} path prefix mappings
+    last_schedule_fallback = Column(Integer, nullable=True)  # Fallback category from most recently active schedule (used when no schedules are active)
+    # Genre-based preroll settings
+    genre_auto_apply = Column(Boolean, default=False)  # Enable/disable automatic genre-based preroll application
+    genre_priority_mode = Column(String, default="schedules_override")  # "schedules_override" or "genres_override" - which takes priority when both are active
+    genre_override_ttl_seconds = Column(Integer, default=10)  # TTL in seconds for genre override window (prevents re-applying same genre preroll)
+    # Dashboard customization
+    dashboard_tile_order = Column(Text, nullable=True)  # JSON array of tile IDs for custom dashboard ordering
+    dashboard_layout = Column(Text, nullable=True)  # JSON dashboard section layout configuration
+    # Version tracking for changelog display
+    last_seen_version = Column(String, nullable=True)  # Last version user has seen (for changelog display)
+    # Logging settings
+    verbose_logging = Column(Boolean, default=False)  # Enable verbose/debug logging for troubleshooting
+    # Coexistence mode (passive mode)
+    passive_mode = Column(Boolean, default=False)  # When enabled, only manage prerolls during active schedules (allows coexistence with other preroll managers)
+    # Clear prerolls when inactive
+    clear_when_inactive = Column(Boolean, default=False)  # When enabled, clear Plex preroll field when no schedules are active
+    # Plex playback guard: minutes a newly started video holds back a preroll change (0 = off)
+    playback_guard_minutes = Column(Integer, default=20)
+    
+    # NeX-Up Settings (Radarr integration for upcoming movie trailers)
+    nexup_enabled = Column(Boolean, default=False)  # Master enable/disable for NeX-Up feature
+    nexup_radarr_url = Column(String, nullable=True)  # Radarr server URL
+    nexup_radarr_api_key = Column(String, nullable=True)  # Radarr API key
+    nexup_storage_path = Column(String, nullable=True)  # Path for temporary trailer storage
+    # How many prerolls a random category plays before each item on Jellyfin
+    # and Emby (Prerolls Max picks them; the plugin plays exactly what it is sent).
+    # NULL means the default of 1, matching Plex's random mode.
+    plugin_random_count = Column(Integer, nullable=True)
+    nexup_quality = Column(String, default='1080')  # Trailer quality: '720', '1080', '4k', 'best'
+    nexup_days_ahead = Column(Integer, default=90)  # How many days ahead to look for upcoming movies
+    nexup_max_trailers = Column(Integer, default=10)  # Maximum number of trailers to keep
+    nexup_max_storage_gb = Column(Float, default=5.0)  # Maximum storage space for trailers
+    nexup_trailers_per_playback = Column(Integer, default=2)  # How many trailers to include per preroll session
+    nexup_playback_order = Column(String, default='release_date')  # 'release_date', 'random', 'download_date'
+    nexup_auto_refresh_hours = Column(Integer, default=24)  # How often to refresh from Radarr (hours)
+    nexup_last_sync = Column(DateTime, nullable=True)  # Last time NeX-Up synced with Radarr
+    nexup_category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)  # Auto-created category for trailers
+    
+    # YouTube Rate Limiting Settings
+    nexup_download_delay = Column(Integer, default=5)  # Seconds to wait between downloads (YouTube rate limiting)
+    nexup_max_concurrent = Column(Integer, default=1)  # Max concurrent downloads (1 = sequential)
+    nexup_bulk_warning_threshold = Column(Integer, default=5)  # Show warning when downloading more than this many
+    nexup_tmdb_api_key = Column(String, nullable=True)  # User's TMDB API key (optional, uses fallback if not provided)
+    
+    # NeX-Up Sonarr Settings (TV show trailers)
+    nexup_sonarr_enabled = Column(Boolean, default=False)  # Enable Sonarr integration
+    nexup_sonarr_url = Column(String, nullable=True)  # Sonarr server URL
+    nexup_sonarr_api_key = Column(String, nullable=True)  # Sonarr API key
+    nexup_tv_category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)  # Auto-created category for TV trailers
+    nexup_last_sonarr_sync = Column(DateTime, nullable=True)  # Last time NeX-Up synced with Sonarr
+    nexup_max_trailer_duration = Column(Integer, default=180)  # Maximum trailer duration in seconds (0 = no limit)
+    nexup_trailer_language = Column(String, default="en")  # TMDB language code to prefer (backend/trailer_language.py)
+    nexup_trailer_language_fallback = Column(String, default="english")  # "english" or "skip" when none in that language
+    nexup_include_unmonitored_movies = Column(Boolean, default=False)  # Include unmonitored movies from Radarr
+    nexup_include_unmonitored_shows = Column(Boolean, default=False)  # Include unmonitored TV shows from Sonarr
+    
+    # Release Date Preference - determines which date is shown/used for "Coming Soon"
+    # Options: 'digital_first' (default), 'digital_only', 'physical_first', 'theatrical'
+    nexup_release_date_preference = Column(String, default='digital_first')
+    
+    # Dynamic Preroll Generation Settings
+    nexup_dynamic_preroll_template = Column(String, nullable=True)  # Template name: 'coming_soon', 'now_playing', etc.
+    nexup_dynamic_preroll_server_name = Column(String, nullable=True)  # Server name to display in generated preroll
+    nexup_dynamic_preroll_duration = Column(Integer, nullable=True)  # Duration of generated preroll in seconds
+    nexup_dynamic_preroll_theme = Column(String, nullable=True)  # Color theme: 'midnight', 'sunset', 'forest', 'royal', 'monochrome'
+    nexup_dynamic_preroll_custom_logo_path = Column(String, nullable=True)  # User-uploaded custom logo image path for dynamic prerolls
+    nexup_dynamic_preroll_language = Column(String, default='en')  # Language for generated preroll text: en, fr, es, de
+    nexup_dynamic_preroll_resolution = Column(String, default='1080')  # Output height: 720, 1080, or 2160
+    nexup_dynamic_preroll_frame_rate = Column(Integer, default=30)  # Output FPS: 24, 30, or 60
+    nexup_dynamic_preroll_render_quality = Column(String, default='high')  # draft, balanced, high, or master
+    nexup_dynamic_preroll_font_scale = Column(Float, default=1.0)  # Shared preview/export type scale: 0.85 to 1.30
+    nexup_dynamic_preroll_font_family = Column(String, nullable=True)  # 'builtin:<id>' or 'custom:<file>'; null keeps the template default
+    nexup_dynamic_preroll_title_color = Column(String, nullable=True)  # Optional #RRGGBB override; null inherits theme primary
+    nexup_dynamic_preroll_subject_color = Column(String, nullable=True)  # Optional #RRGGBB override; null inherits theme secondary
+    nexup_dynamic_preroll_audio_mode = Column(String, default='none')  # none, default, or custom
+    nexup_dynamic_preroll_custom_audio_path = Column(String, nullable=True)  # User-uploaded soundtrack for dynamic prerolls
+    nexup_dynamic_preroll_custom_headline = Column(String, nullable=True)  # Custom Message template: main line
+    nexup_dynamic_preroll_custom_subtext = Column(String, nullable=True)  # Custom Message template: supporting line
+    nexup_dynamic_preroll_qr_data = Column(String, nullable=True)  # QR Code template: URL or text to encode
+    nexup_dynamic_preroll_qr_caption = Column(String, nullable=True)  # QR Code template: caption under the code
+    nexup_dynamic_preroll_qr_dark = Column(String, nullable=True)  # Module colour, #RRGGBB; null is black
+    nexup_dynamic_preroll_qr_light = Column(String, nullable=True)  # Code background; 'transparent' lets the theme through
+    nexup_dynamic_preroll_qr_style = Column(String, default='square')  # square, rounded or dots
+    nexup_dynamic_preroll_qr_logo = Column(Boolean, default=False)  # Overlay the uploaded logo in the middle
+    nexup_dynamic_preroll_qr_plate_color = Column(String, nullable=True)  # Plate behind the code; null is white
+    nexup_dynamic_preroll_qr_plate_opacity = Column(Integer, default=100)  # 0-100; 0 removes the plate entirely
+    nexup_dynamic_preroll_qr_plate_radius = Column(Integer, default=0)  # Corner rounding, 0-50 percent of the plate
+
+    # Coming Soon List Auto-Regeneration Settings
+    nexup_coming_soon_list_auto_regen = Column(Boolean, default=False)  # Auto-regenerate Coming Soon List after sync
+    nexup_coming_soon_list_layout = Column(String, default='grid')  # Layout to use: 'grid', 'list', or 'both'
+    nexup_coming_soon_list_source = Column(String, default='both')  # Source: 'movies', 'shows', or 'both'
+    nexup_coming_soon_list_duration = Column(Integer, default=10)  # Duration in seconds
+    nexup_coming_soon_list_max_items = Column(Integer, default=8)  # Max items to show
+    nexup_coming_soon_list_bg_color = Column(String, default='#141428')  # Background color
+    nexup_coming_soon_list_text_color = Column(String, default='#ffffff')  # Text color
+    nexup_coming_soon_list_accent_color = Column(String, default='#00d4ff')  # Accent color
+    nexup_coming_soon_list_server_name = Column(String, default='')  # Server name to display
+    nexup_coming_soon_list_auto_regen_layout = Column(String, default='both')  # Auto-regen layout: 'grid', 'list', or 'both'
+    nexup_coming_soon_list_include_audio = Column(Boolean, default=False)  # Include background music in generated video
+    nexup_coming_soon_list_custom_audio_path = Column(String, nullable=True)  # User-uploaded custom audio file path
+    nexup_coming_soon_list_custom_logo_path = Column(String, nullable=True)  # User-uploaded custom logo image path
+    # Your own footage behind a Coming Soon list, instead of a generated theme.
+    # Unlike the browser-recorded theme backdrop this is a file on disk, so it
+    # also works when a sync regenerates the list with no browser involved.
+    nexup_coming_soon_list_custom_backdrop_path = Column(String, nullable=True)
+    # How far to darken that footage so titles stay readable, 0-90 percent.
+    nexup_coming_soon_list_backdrop_dim = Column(Integer, default=45)
+    # Same idea for dynamic prerolls. Those composite in the browser canvas, so
+    # this path is only ever read back to the Studio -- the recorder bakes the
+    # footage in before the file reaches FFmpeg.
+    nexup_dynamic_preroll_custom_backdrop_path = Column(String, nullable=True)
+    nexup_dynamic_preroll_backdrop_dim = Column(Integer, default=45)
+    nexup_coming_soon_list_logo_mode = Column(String, default='watermark')  # 'watermark' (faded bg), 'right' (right of title), or 'below' (below title)
+    nexup_coming_soon_list_language = Column(String, default='en')  # Language for generated CSL text: en, fr, es, de
+    nexup_coming_soon_list_resolution = Column(String, default='1080')  # Output height: 720, 1080, or 2160
+    nexup_coming_soon_list_frame_rate = Column(Integer, default=30)  # Output FPS: 24, 30, or 60
+    nexup_coming_soon_list_render_quality = Column(String, default='balanced')  # draft, balanced, high, or master
+    nexup_coming_soon_list_theme = Column(String, nullable=True)  # Named palette from DynamicPrerollGenerator.COLOR_THEMES; null keeps the manual colours
+    nexup_coming_soon_list_qr_data = Column(String, nullable=True)  # Optional link encoded as a QR in the corner
+    nexup_coming_soon_list_font_scale = Column(Float, default=1.0)  # Item text scale, 0.85 to 1.60; row pitch follows it
+    nexup_coming_soon_list_font_family = Column(String, nullable=True)  # 'builtin:<id>' or 'custom:<file>'; null keeps the template default
+    nexup_coming_soon_list_auto_regen_log = Column(String, nullable=True)  # JSON {layout: ISO time} of the last automatic regeneration
+    nexup_coming_soon_list_title_color = Column(String, nullable=True)  # Title text; null inherits the Text colour
+    nexup_coming_soon_list_date_color = Column(String, nullable=True)  # Release dates; null inherits the Accent colour
+    nexup_coming_soon_list_available_color = Column(String, nullable=True)  # "Available Now!"; null keeps the default green
+    nexup_coming_soon_list_heading_color = Column(String, nullable=True)  # "COMING SOON" heading; null inherits the Accent colour
+    nexup_coming_soon_available_days = Column(Integer, default=1)  # Days to show "Available Now!" after download before auto-removing
+    nexup_coming_soon_max_available_now = Column(Integer, default=0)  # Max "Available Now!" items to show (0 = no limit)
+    nexup_trailer_retention_days = Column(Integer, default=7)  # Days to retain downloaded trailers before auto-deleting (0 = keep forever)
+    # NeX-Up Library Trailers settings, as one JSON object (see backend/library_trailers.py)
+    library_trailers_config = Column(Text, nullable=True)
+    
+    # Authentication Settings (Optional - for PWA/remote access)
+    auth_enabled = Column(Boolean, default=False)  # Master toggle - auth is OPTIONAL
+    auth_session_timeout_hours = Column(Integer, default=24)  # Session duration in hours
+    auth_allow_registration = Column(Boolean, default=False)  # Allow new user registration
+    auth_require_https = Column(Boolean, default=False)  # Require HTTPS for login (production mode)
+    
+    # Update System Settings
+    update_check_interval = Column(String, default='daily')  # 'never', 'startup', 'hourly', 'daily', 'weekly'
+    update_include_prerelease = Column(Boolean, default=False)  # Include beta/pre-release versions
+    update_last_check = Column(DateTime, nullable=True)  # Last time we checked for updates
+    update_dismissed_version = Column(String, nullable=True)  # Version user dismissed
+    # Automatic updates (Windows installer builds; backend/self_update.py)
+    update_auto_install = Column(Boolean, default=False)  # opt-in
+    update_auto_hour = Column(Integer, default=4)  # local hour to install in, 0-23
+    update_auto_delay_days = Column(Integer, default=3)  # days a release must be out first
+    update_auto_last_attempt = Column(String, nullable=True)  # "version|ISO time" of the last try
+    
+    # Enhanced Logging Settings
+    log_level = Column(String, default='INFO')  # 'DEBUG', 'INFO', 'WARNING', 'ERROR'
+    log_retention_days = Column(Integer, default=30)  # How long to keep logs in database
+    log_to_database = Column(Boolean, default=True)  # Enable database logging (for UI viewer)
+    log_request_logging = Column(Boolean, default=True)  # Log all API requests with timing
+    log_scheduler_logging = Column(Boolean, default=True)  # Log scheduler activity
+    log_api_logging = Column(Boolean, default=True)  # Log external API calls (Plex, Radarr, etc.)
+
+    # Automatic preroll folder monitoring: minutes between background filesystem
+    # rescans that pick up files added/removed outside the app. 0 = disabled.
+    auto_scan_minutes = Column(Integer, default=15)
+
+    # Filler Category Settings - Used when no schedules are active (different from per-schedule fallback)
+    # The filler kicks in when there are NO active schedules at all, filling the gap globally
+    filler_enabled = Column(Boolean, default=False)  # Enable filler category feature
+    filler_type = Column(String, default='category')  # 'category', 'sequence', or 'coming_soon'
+    filler_category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)  # Category to use as filler
+    filler_sequence_id = Column(Integer, ForeignKey("saved_sequences.id"), nullable=True)  # Sequence to use as filler
+    filler_coming_soon_layout = Column(String, default='grid')  # 'grid' or 'list' for Coming Soon List
+    # Which generated dynamic preroll to use when filler_type is 'dynamic'.
+    # A filename inside the NeX-Up dynamic_prerolls folder, the same place
+    # Coming Soon lists are written.
+    filler_dynamic_filename = Column(String, nullable=True)
+    # The one preroll that plays when filler_type is 'preroll'. No foreign key
+    # (like filler_dynamic_filename), so deleting that preroll or restoring a
+    # backup is never blocked by it; deleting the preroll clears it instead.
+    filler_preroll_id = Column(Integer, nullable=True)
+    filler_active = Column(String, nullable=True)  # Tracks active filler: "category:ID", "sequence:ID", "preroll:ID", "coming_soon:layout", "dynamic:file", or null
+    
+    # Manual sequence apply tracking
+    applied_sequence_id = Column(Integer, nullable=True)  # ID of manually applied sequence (set via Apply button, cleared by scheduler)
+    applied_sequence_name = Column(String, nullable=True)  # Name of manually applied sequence (cached for display)
+    active_schedule_id = Column(Integer, nullable=True)  # ID of currently-active schedule (written by scheduler each tick, read by /plugin/intros for Emby/Jellyfin)
+
+    # Custom preroll storage folder (overrides the auto-resolved default)
+    preroll_folder = Column(String, nullable=True)  # User-configured preroll storage path (None = use auto-resolved default)
+
+    # Ignored conflicts (JSON array of pair keys like ["3-7", "1-5"])
+    ignored_conflicts = Column(String, nullable=True)
+
+    def get_json_value(self, key):
+        """Get a JSON value from a column"""
+        try:
+            value = getattr(self, key, None)
+            return json.loads(value) if value else None
+        except:
+            return None
+            
+    def set_json_value(self, key, value):
+        """Set a JSON value for a column"""
+        try:
+            setattr(self, key, json.dumps(value) if value is not None else None)
+            return True
+        except:
+            return False
+
+
+class APIKey(Base):
+    """API Keys for external system authentication"""
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)  # User-friendly name for the key
+    key_hash = Column(String, nullable=False, index=True)  # SHA256 hash of the API key
+    key_prefix = Column(String(8), nullable=False)  # First 8 chars for identification (e.g., "nx_abc123")
+    permissions = Column(String, default='full')  # 'read' or 'full'
+    expires_at = Column(DateTime, nullable=True)  # Optional expiration date
+    created_at = Column(DateTime, default=utcnow)
+    last_used_at = Column(DateTime, nullable=True)  # Track last usage
+    is_active = Column(Boolean, default=True)  # Soft revoke without deleting
+    description = Column(Text, nullable=True)  # Optional description/notes
+
+
+class User(Base):
+    """User accounts for web UI authentication (optional feature)"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)  # bcrypt hash
+    display_name = Column(String, nullable=True)  # Friendly display name
+    email = Column(String, nullable=True)  # Optional email
+    role = Column(String, default='user')  # 'admin' or 'user'
+    is_active = Column(Boolean, default=True)  # Account enabled/disabled
+    created_at = Column(DateTime, default=utcnow)
+    last_login_at = Column(DateTime, nullable=True)  # Track last login
+    failed_login_attempts = Column(Integer, default=0)  # For lockout protection
+    locked_until = Column(DateTime, nullable=True)  # Account lockout timestamp
+
+
+    navigation_favorites = relationship('NavigationFavorite', cascade='all, delete-orphan')
+
+
+class NavigationFavorite(Base):
+    __tablename__ = 'navigation_favorites'
+    scope = Column(String, primary_key=True)
+    page = Column(String, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class RadarrServer(Base):
+    """NeX-Up: a Radarr read alongside the main one (Setting.nexup_radarr_url),
+    such as a 4K instance. See radarr_servers.py.
+
+    AUTOINCREMENT so a removed server's id is never handed to a new one: the
+    id is part of the movie keys stored on trailer rows."""
+    __tablename__ = "radarr_servers"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=True)
+    url = Column(String, nullable=False)
+    api_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class SonarrServer(Base):
+    """NeX-Up: a Sonarr read alongside the main one (Setting.nexup_sonarr_url).
+    See sonarr_servers.py; AUTOINCREMENT for the same reason as RadarrServer."""
+    __tablename__ = "sonarr_servers"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=True)
+    url = Column(String, nullable=False)
+    api_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class MediaServer(Base):
+    """One Plex, Jellyfin or Emby server. See media_servers.py.
+
+    The first enabled server of each type is mirrored into the settings row
+    (plex_url, jellyfin_url, emby_url, path_mappings) so code written for one
+    server per type keeps working on it. The token or API key lives in the
+    secure store under ``media_server_<id>``, never in this table.
+    AUTOINCREMENT so a removed server's id (and its secret's name) is never reused."""
+    __tablename__ = "media_servers"
+    __table_args__ = {"sqlite_autoincrement": True}
+
+    id = Column(Integer, primary_key=True)
+    type = Column(String, nullable=False)  # plex | jellyfin | emby
+    name = Column(String, nullable=False)  # unique per install, ignoring case
+    url = Column(String, nullable=False)
+    enabled = Column(Boolean, default=True)
+    is_primary = Column(Boolean, default=False)  # the one mirrored into the settings row
+    # Plex machineIdentifier, or the Jellyfin/Emby server id the plugin sends as server_id
+    server_identifier = Column(String, nullable=True)
+    version = Column(String, nullable=True)
+    path_mappings = Column(Text, nullable=True)  # Plex: JSON [{local, plex}], as this server sees the files
+    plugin_key_id = Column(Integer, nullable=True)  # api_keys.id the plugin was given (Jellyfin/Emby)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Session(Base):
+    """User sessions for web UI authentication"""
+    __tablename__ = "sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_token = Column(String, unique=True, nullable=False, index=True)  # Random token
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    ip_address = Column(String, nullable=True)  # Client IP for security
+    user_agent = Column(String, nullable=True)  # Browser/client info
+    is_valid = Column(Boolean, default=True)  # Can be invalidated on logout
+
+    user = relationship("User")
+
+
+class AuthAuditLog(Base):
+    """Audit log for authentication events (login, logout, failed attempts)"""
+    __tablename__ = "auth_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=utcnow, nullable=False, index=True)
+    event_type = Column(String, nullable=False, index=True)  # 'login_success', 'login_failed', 'logout', 'account_locked', 'user_created', 'user_deleted', 'password_changed'
+    username = Column(String, nullable=True, index=True)  # Username involved (nullable for system events)
+    user_id = Column(Integer, nullable=True)  # User ID if applicable
+    ip_address = Column(String, nullable=True)  # Client IP
+    user_agent = Column(String, nullable=True)  # Browser/client info
+    details = Column(String, nullable=True)  # Additional details (e.g., "locked after 5 failed attempts")
+
+
+class LogEntry(Base):
+    """Structured application log entries for the enhanced logging system"""
+    __tablename__ = "log_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=utcnow, nullable=False, index=True)
+    level = Column(String, nullable=False, index=True)  # 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'
+    category = Column(String, nullable=False, index=True)  # 'system', 'scheduler', 'api', 'user', 'plex', 'jellyfin', 'nexup'
+    source = Column(String, nullable=True)  # Module/function name (e.g., 'scheduler.apply_prerolls')
+    message = Column(Text, nullable=False)  # Log message
+    details = Column(Text, nullable=True)  # JSON string with additional context
+    request_id = Column(String, nullable=True, index=True)  # Request ID for correlating logs
+    user_id = Column(Integer, nullable=True)  # User ID if action was user-initiated
+    duration_ms = Column(Integer, nullable=True)  # Duration in milliseconds for timed operations
+    ip_address = Column(String, nullable=True)  # Client IP for API requests
+
+
+@event.listens_for(Preroll, "after_delete")
+def _forget_filler_preroll(mapper, connection, target):
+    """A deleted preroll stops being the filler preroll.
+
+    filler_preroll_id has no foreign key, and SQLite can hand a deleted id to
+    the next new row, so a stale id could make an unrelated upload the
+    filler. Clearing it here covers every way a preroll row is deleted through
+    the ORM (the Library, scans, trailer cleanup); a restore rebuilds it.
+    """
+    try:
+        connection.execute(
+            Setting.__table__.update()
+            .where(Setting.__table__.c.filler_preroll_id == target.id)
+            .values(filler_preroll_id=None)
+        )
+    except Exception:
+        # A database restored from an older release lacks the column until the
+        # restart that follows a restore migrates it; the delete must still work.
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Smart rules, exclusions, play history, watch folders (Prerolls Max)
+# ---------------------------------------------------------------------------
+
+class IntroRule(Base):
+    """One rule of the simple rule set: "when X is about to play, play Y".
+
+    ``when`` and ``play`` are JSON (see intro_rules.py). Rules are checked in
+    ``position`` order; the first enabled rule that matches wins.
+    """
+    __tablename__ = "intro_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    enabled = Column(Boolean, default=True)
+    position = Column(Integer, default=0, index=True)
+    when_json = Column(Text, nullable=True)
+    play_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class IntroExclusion(Base):
+    """A title that never gets intros: by item id, by title, or by tag."""
+    __tablename__ = "intro_exclusions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String, nullable=False)  # item | title | tag
+    value = Column(String, nullable=False)
+    note = Column(String, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class FeatureSetting(Base):
+    """Small key/value store (JSON values) for the smart-feature settings."""
+    __tablename__ = "feature_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=True)
+
+
+class PlayEvent(Base):
+    """One intro that played (or was handed to a media server to play)."""
+    __tablename__ = "intro_plays"
+
+    id = Column(Integer, primary_key=True, index=True)
+    played_at = Column(DateTime, default=utcnow, index=True)
+    preroll_id = Column(Integer, nullable=True, index=True)
+    name = Column(String, nullable=True)
+    path = Column(String, nullable=True)
+    server_type = Column(String, nullable=True)  # plex | jellyfin | emby
+    server_name = Column(String, nullable=True)
+    user_name = Column(String, nullable=True)
+    client = Column(String, nullable=True)
+    device = Column(String, nullable=True)
+    item_id = Column(String, nullable=True)
+    item_name = Column(String, nullable=True)
+    item_type = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # plugin | plex_sessions
+    rule_name = Column(String, nullable=True)
+
+
+class PlaybackCheck(Base):
+    """One movie or episode starting, and whether intros came with it.
+
+    Feeds the missed-intro check (GET /api/health/intros).
+    """
+    __tablename__ = "playback_checks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    at = Column(DateTime, default=utcnow, index=True)
+    server_type = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # plugin | sessions
+    user_name = Column(String, nullable=True)
+    client = Column(String, nullable=True)
+    device = Column(String, nullable=True)
+    item_id = Column(String, nullable=True, index=True)
+    item_name = Column(String, nullable=True)
+    item_type = Column(String, nullable=True)
+    series_id = Column(String, nullable=True, index=True)
+    server_name = Column(String, nullable=True)  # the media server's name in Prerolls Max
+    intro_count = Column(Integer, default=0)
+    # intros | nothing_set | excluded | no_plugin_call | not_played | empty_list
+    outcome = Column(String, nullable=True, index=True)
+    reason = Column(String, nullable=True)
+
+
+class WatchFolder(Base):
+    """A folder Prerolls Max watches for new intro videos."""
+    __tablename__ = "watch_folders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    path = Column(String, nullable=False)
+    collection_id = Column(Integer, ForeignKey("categories.id", ondelete="SET NULL"), nullable=True)
+    mode = Column(String, default="link")  # link (use where it is) | copy (copy into the library)
+    recursive = Column(Boolean, default=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=utcnow)
+    last_checked_at = Column(DateTime, nullable=True)
+    imported_count = Column(Integer, default=0)
+    # Files left out because the exact same video is already in the library.
+    duplicate_count = Column(Integer, default=0)
+    last_error = Column(String, nullable=True)
+    # Files already brought in ("path|size|mtime", JSON list), so a file that
+    # was imported and later removed from the library doesn't come back.
+    imported_keys = Column(Text, nullable=True)

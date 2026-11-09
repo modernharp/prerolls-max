@@ -1,0 +1,67 @@
+# Builds and tests the Prerolls Max Intros plugins (Jellyfin 10.11 and 12,
+# Emby) and uploads them as the "plugins" artifact. Called by ci.yml on every
+# push and pull request, by windows.yml (the installer bundles them) and by
+# release.yml; can also be run by hand.
+name: Plugins
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Plugin version (Directory.Build.props)
+        value: ${{ jobs.build.outputs.version }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test plugins
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        working-directory: plugins
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # One SDK builds all three: Jellyfin 10.11 (.NET 9), Jellyfin 12 (.NET 10)
+      # and Emby (.NET 8). Emby's server libraries come from nuget.org.
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+      - name: Test the shared code
+        run: dotnet test PrerollsMax.Shared.Tests --nologo
+      - name: Test the Jellyfin catalog tool
+        working-directory: plugins/jellyfin-repo
+        run: python3 -m unittest -v test_repository
+      - name: Build and package
+        run: bash build.sh
+      - name: Check the packages
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(dotnet msbuild PrerollsMax.Jellyfin/PrerollsMax.Jellyfin.csproj -getProperty:PrerollsMaxPluginVersion -p:TargetFramework=net9.0 | tr -d '[:space:]')"
+          for series in 10.11 12; do
+            zip="out/PrerollsMax.Jellyfin-$series-$version.zip"
+            test "$(unzip -Z1 "$zip" | sort | tr '\n' ' ')" = "PrerollsMax.Jellyfin.dll meta.json thumb.png "
+            unzip -p "$zip" meta.json | python3 -c "import json,sys; m=json.load(sys.stdin); assert m['guid']=='c0a6ea94-7795-4b61-b964-4ddfb93ec8b0' and m['version']=='$version', m"
+          done
+          test "$(unzip -Z1 "out/PrerollsMax.Emby-$version.zip")" = "PrerollsMax.Emby.dll"
+          (cd out && sha256sum ./*.zip)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugins
+          path: |
+            plugins/out/*.zip
+            plugins/out/PrerollsMax.Emby.dll
+          if-no-files-found: error
+          retention-days: 30

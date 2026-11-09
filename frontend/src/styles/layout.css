@@ -1,0 +1,234 @@
+/* App shell: sidebar on wide screens, top bar + bottom tabs on phones. */
+.shell {
+  min-height: 100dvh;
+}
+
+/* The sidebar is fixed, so on a long page its column is painted by the
+   shell too: the panel colour and its border reach the bottom of the page,
+   not just the bottom of the window. */
+@media (min-width: 900px) {
+  .shell {
+    display: grid;
+    grid-template-columns: var(--sidebar) minmax(0, 1fr);
+    align-items: start;
+    background: linear-gradient(
+      to right,
+      var(--surface) calc(var(--sidebar) - 1px),
+      var(--border) calc(var(--sidebar) - 1px),
+      var(--border) var(--sidebar),
+      var(--bg) var(--sidebar)
+    );
+  }
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  grid-column: 1;
+  width: var(--sidebar);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-3);
+  gap: var(--space-4);
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 750;
+  font-size: var(--text-lg);
+  color: var(--text);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-2);
+}
+
+.brand:hover { color: var(--text); }
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--touch);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.nav-link:hover { background: var(--surface-2); color: var(--text); }
+
+.nav-link[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.main {
+  grid-column: 2;
+  padding: var(--space-6) var(--space-6) var(--space-7);
+  min-width: 0;
+}
+
+.main-inner {
+  max-width: var(--content);
+  margin: 0 auto;
+}
+
+.topbar,
+.tabbar {
+  display: none;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.page-header h1 { margin: 0; }
+.page-header p { margin: var(--space-1) 0 0; color: var(--text-muted); max-width: 60ch; }
+.page-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.section { margin-bottom: var(--space-6); }
+.section > h2 { margin-bottom: var(--space-3); }
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--warning-soft);
+  color: var(--text);
+  font-size: var(--text-sm);
+  flex-wrap: wrap;
+}
+
+.banner svg { color: var(--warning); flex: none; }
+
+/* Centered single-card screens: sign in, first-run setup */
+.auth-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+}
+
+.auth-card {
+  width: min(460px, 100%);
+}
+
+.auth-card .brand { justify-content: center; margin-bottom: var(--space-4); font-size: var(--text-xl); }
+
+.wizard-card {
+  width: min(720px, 100%);
+}
+
+.steps {
+  display: flex;
+  gap: var(--space-2);
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--space-5);
+  flex-wrap: wrap;
+}
+
+.step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.step-pill[aria-current="step"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.step-pill.done { color: var(--success); border-color: var(--success); }
+
+@media (max-width: 899px) {
+  .sidebar { display: none; }
+
+  .topbar {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .main {
+    padding: var(--space-4) var(--space-4) calc(88px + env(safe-area-inset-bottom));
+  }
+
+  .tabbar {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .tab-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-height: 60px;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .tab-link[aria-current="page"] { color: var(--accent-text); }
+  .tab-link[aria-current="page"] svg { stroke-width: 2.5; }
+
+  /* On phones the main buttons sit at the bottom of the screen, so messages
+     appear at the top, under the title bar, where they don't cover them. */
+  .toast-viewport {
+    top: calc(64px + env(safe-area-inset-top));
+    bottom: auto;
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+
+  .page-header h1 { font-size: var(--text-xl); }
+  .card { padding: var(--space-4); }
+  .dialog { padding: var(--space-4); }
+}

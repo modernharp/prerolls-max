@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules
+frontend/dist/
+data/
+*.db
+*.db-wal
+*.db-shm
+plugins/**/bin/
+plugins/**/obj/
+plugins/**/out/
+# Written at build time by scripts/write_build_info.py
+build_info.json
+# Windows build output (packaging/windows)
+packaging/windows/dist/
+packaging/windows/build/
+packaging/windows/PrerollsMax_ICON/

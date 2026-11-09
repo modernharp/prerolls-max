@@ -1,0 +1,1015 @@
+import datetime
+import json
+import os
+import tempfile
+import threading
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from backend import models
+from backend import scheduler as scheduler_module
+
+
+def make_schedule(**overrides):
+    values = {
+        "id": 1,
+        "name": "Test schedule",
+        "type": "weekly",
+        "start_date": datetime.datetime(2026, 1, 1),
+        "end_date": None,
+        "recurrence_pattern": None,
+        "holiday_name": None,
+        "holiday_country": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+class ScheduleWindowTests(unittest.TestCase):
+    def setUp(self):
+        self.scheduler = scheduler_module.Scheduler()
+
+    def test_weekly_overnight_window_uses_the_starting_weekday(self):
+        schedule = make_schedule(
+            recurrence_pattern=json.dumps({
+                "weekDays": ["friday"],
+                "timeRange": {"start": "22:00", "end": "03:00"},
+            })
+        )
+
+        self.assertTrue(
+            self.scheduler._is_schedule_active(schedule, datetime.datetime(2026, 8, 1, 1, 0))
+        )  # Saturday morning belongs to Friday night's window.
+        self.assertFalse(
+            self.scheduler._is_schedule_active(schedule, datetime.datetime(2026, 7, 31, 1, 0))
+        )  # Friday morning belongs to Thursday night's window.
+
+    def test_monthly_overnight_window_uses_the_starting_month_and_day(self):
+        schedule = make_schedule(
+            type="monthly",
+            start_date=datetime.datetime(2000, 1, 1),
+            recurrence_pattern=json.dumps({
+                "months": [1],
+                "monthDays": [31],
+                "timeRange": {"start": "22:00", "end": "03:00"},
+            }),
+        )
+
+        self.assertTrue(
+            self.scheduler._is_schedule_active(schedule, datetime.datetime(2026, 2, 1, 1, 0))
+        )
+        self.assertFalse(
+            self.scheduler._is_schedule_active(schedule, datetime.datetime(2026, 1, 31, 1, 0))
+        )
+
+    def test_yearly_overnight_window_can_cross_new_year(self):
+        schedule = make_schedule(
+            type="yearly",
+            start_date=datetime.datetime(2000, 12, 31, 0, 0),
+            end_date=datetime.datetime(2000, 12, 31, 23, 59),
+            recurrence_pattern=json.dumps({
+                "timeRange": {"start": "22:00", "end": "03:00"},
+            }),
+        )
+
+        self.assertTrue(
+            self.scheduler._is_schedule_active(schedule, datetime.datetime(2027, 1, 1, 1, 0))
+        )
+        self.assertFalse(
+            self.scheduler._is_schedule_active(schedule, datetime.datetime(2026, 12, 31, 1, 0))
+        )
+
+    def test_future_pinned_linked_holiday_does_not_run_a_year_early(self):
+        schedule = make_schedule(
+            type="holiday",
+            start_date=datetime.datetime(2027, 11, 25),
+            end_date=datetime.datetime(2027, 11, 25, 23, 59),
+            holiday_name="Thanksgiving",
+            holiday_country="US",
+        )
+
+        with patch.object(
+            self.scheduler,
+            "_get_holiday_date",
+            return_value=datetime.date(2026, 11, 26),
+        ) as holiday_lookup:
+            self.assertFalse(
+                self.scheduler._is_schedule_active(
+                    schedule,
+                    datetime.datetime(2026, 11, 26, 12, 0),
+                )
+            )
+
+        holiday_lookup.assert_not_called()
+
+    def test_future_static_holiday_does_not_run_a_year_early(self):
+        schedule = make_schedule(
+            type="holiday",
+            start_date=datetime.datetime(2027, 7, 4),
+            end_date=datetime.datetime(2027, 7, 4, 23, 59),
+        )
+
+        self.assertFalse(
+            self.scheduler._is_schedule_active(
+                schedule,
+                datetime.datetime(2026, 7, 4, 12, 0),
+            )
+        )
+
+
+class NextRunTests(unittest.TestCase):
+    def setUp(self):
+        self.scheduler = scheduler_module.Scheduler()
+
+    def test_monthly_next_run_uses_recurrence_days_and_skips_invalid_dates(self):
+        schedule = make_schedule(
+            type="monthly",
+            start_date=datetime.datetime(2000, 1, 1),
+            recurrence_pattern=json.dumps({
+                "months": [2, 3],
+                "monthDays": [31],
+                "timeRange": {"start": "20:30", "end": "22:00"},
+            }),
+        )
+        now = datetime.datetime(2026, 2, 1, 12, 0)
+
+        with patch.object(scheduler_module, "_localized_now", return_value=now):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertEqual(next_run, datetime.datetime(2026, 3, 31, 20, 30))
+
+    def test_monthly_next_run_handles_sparse_leap_day_configuration(self):
+        schedule = make_schedule(
+            type="monthly",
+            start_date=datetime.datetime(2000, 1, 1),
+            recurrence_pattern=json.dumps({"months": [2], "monthDays": [29]}),
+        )
+
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=datetime.datetime(2025, 3, 1)
+        ):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertEqual(next_run, datetime.datetime(2028, 2, 29))
+
+    def test_yearly_next_run_skips_non_leap_years(self):
+        schedule = make_schedule(
+            type="yearly",
+            start_date=datetime.datetime(2000, 2, 29, 18, 0),
+            end_date=datetime.datetime(2000, 2, 29, 23, 59),
+        )
+
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=datetime.datetime(2025, 3, 1)
+        ):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertEqual(next_run, datetime.datetime(2028, 2, 29, 18, 0))
+
+    def test_daily_next_run_is_today_when_its_time_has_not_passed(self):
+        schedule = make_schedule(
+            type="daily",
+            start_date=datetime.datetime(2026, 9, 4, 11, 25),
+            recurrence_pattern=json.dumps({"timeRange": {"start": "11:08", "end": "14:25"}}),
+        )
+
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=datetime.datetime(2026, 9, 6, 6, 20)
+        ):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertEqual(next_run, datetime.datetime(2026, 9, 6, 11, 8))
+
+    def test_daily_next_run_rolls_over_once_todays_time_has_passed(self):
+        schedule = make_schedule(
+            type="daily",
+            start_date=datetime.datetime(2026, 9, 4, 11, 25),
+            recurrence_pattern=json.dumps({"timeRange": {"start": "11:08", "end": "14:25"}}),
+        )
+
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=datetime.datetime(2026, 9, 6, 15, 0)
+        ):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertEqual(next_run, datetime.datetime(2026, 9, 7, 11, 8))
+
+    def test_weekly_next_run_lands_on_a_configured_weekday(self):
+        schedule = make_schedule(
+            type="weekly",
+            start_date=datetime.datetime(2026, 1, 1),
+            recurrence_pattern=json.dumps({
+                "weekDays": ["tuesday", "friday"],
+                "timeRange": {"start": "20:00"},
+            }),
+        )
+
+        # A Sunday, so the next configured day is the Tuesday after it.
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=datetime.datetime(2026, 9, 6, 6, 20)
+        ):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertEqual(next_run, datetime.datetime(2026, 9, 8, 20, 0))
+        self.assertEqual(next_run.strftime("%A"), "Tuesday")
+
+    def test_a_schedule_past_its_end_date_has_no_next_run(self):
+        schedule = make_schedule(
+            type="daily",
+            start_date=datetime.datetime(2026, 9, 4, 11, 25),
+            end_date=datetime.datetime(2026, 9, 5, 11, 25),
+            recurrence_pattern=json.dumps({"timeRange": {"start": "11:08"}}),
+        )
+
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=datetime.datetime(2026, 9, 6, 6, 20)
+        ):
+            next_run = self.scheduler._calculate_next_run(schedule)
+
+        self.assertIsNone(next_run)
+
+
+class DeferredWriteReportingTests(unittest.TestCase):
+    """A write held back by the playback guard is a wait, not a failure.
+
+    One evening's viewing produced 246 WARNING lines reading "Failed to apply
+    sequence" while the guard was doing exactly its job, and nothing anywhere
+    told the user a change was queued.
+    """
+
+    def setUp(self):
+        self.scheduler = scheduler_module.Scheduler()
+
+    def test_a_deferral_is_not_logged_as_a_failure(self):
+        self.scheduler._deferred_write_since = datetime.datetime(2026, 9, 5, 5, 0)
+
+        with patch.object(scheduler_module, "_scheduler_log") as failure_log, \
+             patch.object(scheduler_module, "_scheduler_verbose") as wait_log:
+            self.scheduler._log_apply_outcome(
+                "MIX BLEND: Failed to apply sequence 'Default'",
+                "blended sequence 'Default'", level="WARNING")
+
+        failure_log.assert_not_called()
+        wait_log.assert_called_once()
+        self.assertIn("Waiting for playback", wait_log.call_args[0][0])
+
+    def test_a_real_failure_is_still_logged_as_one(self):
+        self.scheduler._deferred_write_since = None
+
+        with patch.object(scheduler_module, "_scheduler_log") as failure_log, \
+             patch.object(scheduler_module, "_scheduler_verbose") as wait_log:
+            self.scheduler._log_apply_outcome(
+                "MIX BLEND: Failed to apply sequence 'Default'",
+                "blended sequence 'Default'", level="WARNING")
+
+        wait_log.assert_not_called()
+        failure_log.assert_called_once_with(
+            "MIX BLEND: Failed to apply sequence 'Default'", level="WARNING")
+
+    def test_nothing_is_reported_as_waiting_when_no_write_is_held(self):
+        self.assertIsNone(self.scheduler.deferred_write_state())
+
+    def test_a_held_write_reports_what_it_is_waiting_on(self):
+        self.scheduler._deferred_write_since = (
+            datetime.datetime.now() - datetime.timedelta(minutes=42))
+        self.scheduler._deferred_write_context = "sequence schedule 32"
+
+        state = self.scheduler.deferred_write_state()
+
+        self.assertEqual(state["context"], "sequence schedule 32")
+        self.assertGreaterEqual(state["seconds"], 42 * 60)
+        self.assertTrue(state["since"])
+
+    def test_the_guard_records_and_clears_its_context(self):
+        setting = SimpleNamespace()
+
+        with patch.object(self.scheduler, "_plex_blocking_session_count", return_value=1):
+            self.assertTrue(self.scheduler._defer_preroll_write(setting, "sequence schedule 32"))
+        self.assertEqual(self.scheduler.deferred_write_state()["context"], "sequence schedule 32")
+
+        # Playback stops: the wait is over and nothing is left advertised.
+        with patch.object(self.scheduler, "_plex_blocking_session_count", return_value=0):
+            self.assertFalse(self.scheduler._defer_preroll_write(setting, "sequence schedule 32"))
+        self.assertIsNone(self.scheduler.deferred_write_state())
+
+
+class SequentialSequenceResolutionTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        models.Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+        def media_path(name):
+            path = os.path.join(self.temp_dir.name, name)
+            with open(path, "wb") as media_file:
+                media_file.write(b"test")
+            return path
+
+        with self.Session() as db:
+            category = models.Category(name="Sequence category")
+            other = models.Category(name="Other category")
+            db.add_all([category, other])
+            db.flush()
+
+            primary = models.Preroll(
+                filename="primary.mp4",
+                path=media_path("primary.mp4"),
+                category_id=category.id,
+                enabled=True,
+            )
+            disabled = models.Preroll(
+                filename="disabled.mp4",
+                path=media_path("disabled.mp4"),
+                category_id=category.id,
+                enabled=False,
+            )
+            secondary = models.Preroll(
+                filename="secondary.mp4",
+                path=media_path("secondary.mp4"),
+                category_id=other.id,
+                enabled=True,
+                categories=[category],
+            )
+            missing = models.Preroll(
+                filename="missing.mp4",
+                path=os.path.join(self.temp_dir.name, "missing.mp4"),
+                category_id=category.id,
+                enabled=True,
+            )
+            third = models.Preroll(
+                filename="third.mp4",
+                path=media_path("third.mp4"),
+                category_id=category.id,
+                enabled=True,
+            )
+            db.add_all([primary, disabled, secondary, missing, third])
+            db.flush()
+
+            blocks = [{
+                "type": "sequential",
+                "categoryId": str(category.id),
+                "count": 3,
+            }]
+            saved_sequence = models.SavedSequence(
+                name="Sequential only",
+                blocks=json.dumps(blocks),
+            )
+            db.add_all([
+                saved_sequence,
+                models.Setting(plex_url="http://plex.invalid", plex_token="token"),
+            ])
+            db.commit()
+
+            self.category_id = category.id
+            self.saved_sequence_id = saved_sequence.id
+            self.expected_ids = [primary.id, secondary.id, third.id]
+            self.expected_paths = [
+                os.path.abspath(primary.path),
+                os.path.abspath(secondary.path),
+                os.path.abspath(third.path),
+            ]
+
+    def tearDown(self):
+        self.engine.dispose()
+        self.temp_dir.cleanup()
+
+    def test_sequential_block_uses_stable_id_order_and_skips_ineligible_rows(self):
+        with self.Session() as db:
+            resolved = scheduler_module.resolve_category_sequence_block(
+                {
+                    "type": "sequential",
+                    "categoryId": str(self.category_id),
+                    "count": 3,
+                },
+                db,
+            )
+            self.assertEqual([preroll.id for preroll in resolved], self.expected_ids)
+            fallback_resolved = scheduler_module.resolve_category_sequence_block(
+                {"type": "sequential", "count": 3},
+                db,
+                fallback_category_id=self.category_id,
+            )
+            self.assertEqual(
+                [preroll.id for preroll in fallback_resolved],
+                self.expected_ids,
+            )
+            self.assertEqual(
+                scheduler_module.resolve_category_sequence_block(
+                    {"type": "sequential", "category_id": "invalid", "count": 2},
+                    db,
+                ),
+                [],
+            )
+            self.assertEqual(
+                scheduler_module.resolve_category_sequence_block(
+                    {"type": "sequential", "category_id": 999999, "count": 2},
+                    db,
+                ),
+                [],
+            )
+
+    def test_random_block_cycles_through_every_eligible_preroll_before_repeating(self):
+        rotation_key = ("test", self.category_id)
+        with self.Session() as db:
+            selected_ids = [
+                scheduler_module.resolve_category_sequence_block(
+                    {
+                        "type": "random",
+                        "category_id": self.category_id,
+                        "count": 1,
+                    },
+                    db,
+                    rotation_key=rotation_key,
+                )[0].id
+                for _ in range(3)
+            ]
+
+        self.assertEqual(set(selected_ids), set(self.expected_ids))
+
+    def test_random_block_covering_the_whole_pool_is_still_shuffled(self):
+        """A random block whose count reaches the whole category used to fall
+        through to the sequential return and played in ascending id order every
+        time."""
+        orders = set()
+        with self.Session() as db:
+            for _ in range(40):
+                resolved = scheduler_module.resolve_category_sequence_block(
+                    {
+                        "type": "random",
+                        "category_id": self.category_id,
+                        "count": len(self.expected_ids),
+                    },
+                    db,
+                )
+                self.assertEqual(sorted(p.id for p in resolved), sorted(self.expected_ids))
+                orders.add(tuple(p.id for p in resolved))
+
+        self.assertGreater(len(orders), 1, "random block returned one fixed order")
+
+    def test_blended_schedule_resolves_sequential_blocks_and_skips_missing_files(self):
+        """Blend built its own random-only resolver, so a sequential block was
+        dropped from the blended playlist and a preroll whose file no longer
+        existed was still published to Plex."""
+        connector = MagicMock()
+        connector.get_server_info.return_value = {"platform": "Windows" if os.name == "nt" else "Linux"}
+        connector.set_preroll.return_value = True
+
+        with self.Session() as db, patch.object(
+            scheduler_module,
+            "PlexConnector",
+            return_value=connector,
+        ):
+            schedule = models.Schedule(
+                name="Blended sequential",
+                type="daily",
+                start_date=datetime.datetime(2026, 1, 1),
+                category_id=self.category_id,
+                is_active=True,
+                sequence=json.dumps([{
+                    "type": "sequential",
+                    "categoryId": str(self.category_id),
+                    "count": 3,
+                }]),
+            )
+            db.add(schedule)
+            db.commit()
+            scheduler = scheduler_module.Scheduler()
+            self.assertTrue(
+                scheduler._apply_blended_schedules_to_plex([schedule], db)
+            )
+
+        self.assertTrue(connector.set_preroll.call_args_list)
+        published = [
+            item
+            for item in connector.set_preroll.call_args_list[-1].args[0].split(";")
+            if item
+        ]
+        self.assertEqual(sorted(published), sorted(self.expected_paths))
+        self.assertNotIn("missing.mp4", " ".join(published))
+
+    def test_sequential_only_schedule_and_saved_filler_apply_identically(self):
+        connector = MagicMock()
+        connector.get_server_info.return_value = {"platform": "Windows" if os.name == "nt" else "Linux"}
+        connector.set_preroll.return_value = True
+        schedule = make_schedule(
+            name="Sequential schedule",
+            category_id=None,
+            sequence=json.dumps([{
+                "type": "sequential",
+                "categoryId": str(self.category_id),
+                "count": 3,
+            }]),
+        )
+
+        with self.Session() as db, patch.object(
+            scheduler_module,
+            "PlexConnector",
+            return_value=connector,
+        ):
+            scheduler = scheduler_module.Scheduler()
+            self.assertTrue(scheduler._apply_schedule_sequence_to_plex(schedule, db))
+            self.assertTrue(scheduler._apply_saved_sequence_to_plex(self.saved_sequence_id, db))
+
+        expected = ",".join(self.expected_paths)
+        self.assertEqual(
+            [call.args[0] for call in connector.set_preroll.call_args_list],
+            [expected, expected],
+        )
+
+
+class SchedulerTransitionTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        models.Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.now = datetime.datetime(2026, 7, 31, 23, 0)
+        self.scheduler = scheduler_module.Scheduler()
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def _seed_categories(self, db):
+        primary = models.Category(name="Primary")
+        fallback = models.Category(name="Fallback")
+        db.add_all([primary, fallback])
+        db.flush()
+        return primary, fallback
+
+    def _run_check(self):
+        return patch.multiple(
+            scheduler_module,
+            SessionLocal=self.Session,
+            _localized_now=MagicMock(return_value=self.now),
+            _scheduler_log=MagicMock(),
+            _scheduler_verbose=MagicMock(),
+        )
+
+    def test_concurrent_ticks_are_serialized(self):
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+        calls = []
+
+        def fake_check():
+            calls.append(threading.current_thread().name)
+            if len(calls) == 1:
+                first_entered.set()
+                release_first.wait(timeout=1)
+            else:
+                second_entered.set()
+
+        with patch.object(self.scheduler, "_check_and_execute_schedules_locked", side_effect=fake_check):
+            first = threading.Thread(target=self.scheduler._check_and_execute_schedules, name="first")
+            second = threading.Thread(target=self.scheduler._check_and_execute_schedules, name="second")
+            first.start()
+            self.assertTrue(first_entered.wait(timeout=1))
+            second.start()
+            self.assertFalse(second_entered.wait(timeout=0.05))
+            release_first.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+
+        self.assertTrue(second_entered.is_set())
+        self.assertEqual(calls, ["first", "second"])
+
+    def test_linked_holiday_dates_move_to_the_holidays_next_occurrence(self):
+        # A holiday-linked schedule means "Thanksgiving, US", not a fixed date,
+        # so every one of them tracks the next occurrence -- whether its stored
+        # date is behind us or pinned to some later year.
+        with self.Session() as db:
+            stale = models.Schedule(
+                name="Stale Thanksgiving",
+                type="holiday",
+                start_date=datetime.datetime(2025, 11, 27),
+                end_date=datetime.datetime(2025, 11, 27, 23, 59),
+                holiday_name="Thanksgiving",
+                holiday_country="US",
+                is_active=True,
+            )
+            pinned_later = models.Schedule(
+                name="Later Thanksgiving",
+                type="holiday",
+                start_date=datetime.datetime(2027, 11, 25),
+                end_date=datetime.datetime(2027, 11, 25, 23, 59),
+                holiday_name="Thanksgiving",
+                holiday_country="US",
+                is_active=True,
+            )
+            unlinked = models.Schedule(
+                name="Not linked to a holiday",
+                type="custom",
+                start_date=datetime.datetime(2025, 11, 27),
+                end_date=datetime.datetime(2025, 11, 27, 23, 59),
+                is_active=True,
+            )
+            db.add_all([stale, pinned_later, unlinked])
+            db.commit()
+            stale_id, later_id, unlinked_id = stale.id, pinned_later.id, unlinked.id
+
+        next_thanksgiving = datetime.date(2026, 11, 26)
+        refresh_now = datetime.datetime(2026, 1, 2, 8, 0)
+        with self.Session() as db, patch.object(
+            self.scheduler,
+            "_get_holiday_date",
+            return_value=next_thanksgiving,
+        ) as holiday_lookup:
+            self.scheduler._refresh_linked_holiday_dates_if_needed(db, refresh_now)
+
+        with self.Session() as db:
+            stale = db.get(models.Schedule, stale_id)
+            pinned_later = db.get(models.Schedule, later_id)
+            unlinked = db.get(models.Schedule, unlinked_id)
+            self.assertEqual(stale.start_date, datetime.datetime(2026, 11, 26))
+            self.assertEqual(stale.end_date, datetime.datetime(2026, 11, 26, 23, 59))
+            self.assertEqual(pinned_later.start_date, datetime.datetime(2027, 11, 25))
+            self.assertEqual(pinned_later.end_date, datetime.datetime(2027, 11, 25, 23, 59))
+            # A schedule with no holiday link is not swept up in the refresh.
+            self.assertEqual(unlinked.start_date, datetime.datetime(2025, 11, 27))
+
+        # Only the unpinned schedule resolves, in the configured local year.
+        self.assertEqual(holiday_lookup.call_count, 1)
+        holiday_lookup.assert_called_with("Thanksgiving", "US", 2026)
+
+    def test_linked_holiday_refresh_runs_once_per_local_day(self):
+        with self.Session() as db:
+            db.add(models.Schedule(
+                name="Thanksgiving",
+                type="holiday",
+                start_date=datetime.datetime(2025, 11, 27),
+                end_date=datetime.datetime(2025, 11, 27, 23, 59),
+                holiday_name="Thanksgiving",
+                holiday_country="US",
+                is_active=True,
+            ))
+            db.commit()
+
+        with self.Session() as db, patch.object(
+            self.scheduler,
+            "_get_holiday_date",
+            return_value=datetime.date(2026, 11, 26),
+        ) as holiday_lookup:
+            self.scheduler._refresh_linked_holiday_dates_if_needed(
+                db, datetime.datetime(2026, 1, 2, 8, 0)
+            )
+            self.assertEqual(holiday_lookup.call_count, 1)
+            # Same day, so the holiday source is not consulted again.
+            self.scheduler._refresh_linked_holiday_dates_if_needed(
+                db, datetime.datetime(2026, 1, 2, 19, 30)
+            )
+            self.assertEqual(holiday_lookup.call_count, 1)
+            # Next day, so it is.
+            self.scheduler._refresh_linked_holiday_dates_if_needed(
+                db, datetime.datetime(2026, 1, 3, 8, 0)
+            )
+            self.assertEqual(holiday_lookup.call_count, 2)
+
+    def test_same_category_fallback_reapplies_and_clears_stale_schedule_pointer(self):
+        with self.Session() as db:
+            primary, _ = self._seed_categories(db)
+            ended = models.Schedule(
+                name="Ended",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=2),
+                end_date=self.now - datetime.timedelta(days=1),
+                category_id=primary.id,
+                fallback_category_id=primary.id,
+                is_active=True,
+            )
+            db.add(ended)
+            db.flush()
+            db.add(models.Setting(
+                active_category=primary.id,
+                active_schedule_id=ended.id,
+                last_schedule_fallback=primary.id,
+            ))
+            db.commit()
+            primary_id, ended_id = primary.id, ended.id
+
+        self.scheduler._last_logged_state = f"schedule_active:{ended_id}:{primary_id}"
+        with self._run_check(), patch.object(
+            self.scheduler, "_apply_category_to_plex", return_value=True
+        ) as apply_category:
+            self.scheduler._check_and_execute_schedules()
+
+        apply_category.assert_called_once()
+        self.assertEqual(apply_category.call_args.args[0], primary_id)
+        with self.Session() as db:
+            setting = db.query(models.Setting).first()
+            self.assertIsNone(setting.active_schedule_id)
+            self.assertIsNone(setting.filler_active)
+
+    def test_active_schedule_reapplies_when_leaving_same_category_filler_state(self):
+        with self.Session() as db:
+            primary, _ = self._seed_categories(db)
+            active = models.Schedule(
+                name="Active",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=1),
+                category_id=primary.id,
+                is_active=True,
+            )
+            db.add(active)
+            db.flush()
+            db.add(models.Setting(
+                active_category=primary.id,
+                active_schedule_id=active.id,
+                filler_active=f"category:{primary.id}",
+            ))
+            db.commit()
+            primary_id, active_id = primary.id, active.id
+
+        with self._run_check(), patch.object(
+            self.scheduler, "_apply_category_to_plex", return_value=True
+        ) as apply_category:
+            self.scheduler._check_and_execute_schedules()
+
+        apply_category.assert_called_once()
+        with self.Session() as db:
+            setting = db.query(models.Setting).first()
+            self.assertEqual(setting.active_schedule_id, active_id)
+            self.assertIsNone(setting.filler_active)
+
+    def test_category_backed_sequence_retries_when_no_apply_marker_exists(self):
+        with self.Session() as db:
+            primary, _ = self._seed_categories(db)
+            active = models.Schedule(
+                name="Sequence",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=1),
+                category_id=primary.id,
+                sequence=json.dumps([{"type": "fixed", "preroll_id": 999}]),
+                is_active=True,
+            )
+            db.add(active)
+            db.flush()
+            db.add(models.Setting(active_category=primary.id, active_schedule_id=active.id))
+            db.commit()
+            active_id = active.id
+
+        with self._run_check(), patch.object(
+            self.scheduler, "_apply_schedule_sequence_to_plex", return_value=True
+        ) as apply_sequence:
+            self.scheduler._check_and_execute_schedules()
+
+        apply_sequence.assert_called_once()
+        self.assertEqual(self.scheduler._last_rotation_time[active_id], self.now)
+
+    def test_random_nexup_sequence_rotates_after_the_rotation_interval(self):
+        with self.Session() as db:
+            primary, _ = self._seed_categories(db)
+            active = models.Schedule(
+                name="Random trailers",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=1),
+                category_id=primary.id,
+                sequence=json.dumps([{
+                    "type": "nexup_trailers",
+                    "source": "both",
+                    "mode": "random",
+                    "count": 2,
+                }]),
+                is_active=True,
+            )
+            db.add(active)
+            db.flush()
+            db.add(models.Setting(active_category=primary.id, active_schedule_id=active.id))
+            db.commit()
+            active_id = active.id
+
+        self.scheduler._last_rotation_time[active_id] = self.now - datetime.timedelta(seconds=601)
+        with self._run_check(), patch.object(
+            self.scheduler, "_apply_schedule_sequence_to_plex", return_value=True
+        ) as apply_sequence:
+            self.scheduler._check_and_execute_schedules()
+
+        apply_sequence.assert_called_once()
+        self.assertEqual(self.scheduler._last_rotation_time[active_id], self.now)
+
+    def test_sequence_only_schedule_is_a_valid_winner(self):
+        with self.Session() as db:
+            active = models.Schedule(
+                name="Sequence only",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=1),
+                category_id=None,
+                sequence=json.dumps([{"type": "fixed", "preroll_id": 999}]),
+                is_active=True,
+            )
+            db.add(active)
+            db.flush()
+            db.add(models.Setting())
+            db.commit()
+            active_id = active.id
+
+        log = MagicMock()
+        with patch.multiple(
+            scheduler_module,
+            SessionLocal=self.Session,
+            _localized_now=MagicMock(return_value=self.now),
+            _scheduler_log=log,
+            _scheduler_verbose=MagicMock(),
+        ), patch.object(
+            self.scheduler, "_apply_schedule_sequence_to_plex", return_value=True
+        ) as apply_sequence:
+            self.scheduler._check_and_execute_schedules()
+
+        apply_sequence.assert_called_once()
+        self.assertFalse(any("no category_id" in str(call).lower() for call in log.call_args_list))
+        with self.Session() as db:
+            setting = db.query(models.Setting).first()
+            self.assertEqual(setting.active_schedule_id, active_id)
+            self.assertIsNone(setting.active_category)
+
+    def test_legacy_null_priority_does_not_crash_winner_selection(self):
+        with self.Session() as db:
+            primary, _ = self._seed_categories(db)
+            active = models.Schedule(
+                name="Legacy priority",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=1),
+                category_id=primary.id,
+                is_active=True,
+            )
+            db.add(active)
+            db.flush()
+            active_id = active.id
+            db.add(models.Setting())
+            db.commit()
+            db.execute(
+                models.Schedule.__table__.update()
+                .where(models.Schedule.id == active_id)
+                .values(priority=None)
+            )
+            db.commit()
+
+        with self._run_check(), patch.object(
+            self.scheduler, "_apply_category_to_plex", return_value=True
+        ) as apply_category:
+            self.scheduler._check_and_execute_schedules()
+
+        apply_category.assert_called_once()
+
+
+class VerificationClockTests(unittest.TestCase):
+    def test_verification_uses_the_configured_timezone_clock(self):
+        scheduler = scheduler_module.Scheduler()
+        db = MagicMock()
+        db.query.return_value.first.return_value = None
+        configured_now = datetime.datetime(2026, 8, 1, 1, 0)
+
+        with patch.object(
+            scheduler_module, "_localized_now", return_value=configured_now
+        ) as localized_now, patch.object(scheduler_module, "SessionLocal", return_value=db):
+            scheduler._verify_and_reapply_if_needed()
+
+        localized_now.assert_called_once_with()
+        db.close.assert_called_once_with()
+
+
+class VerificationModeTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        models.Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.now = datetime.datetime(2026, 7, 31, 23, 0)
+
+        with self.Session() as db:
+            category = models.Category(name="Playlist")
+            db.add(category)
+            db.flush()
+            schedule = models.Schedule(
+                name="Playlist schedule",
+                type="daily",
+                start_date=self.now - datetime.timedelta(days=1),
+                category_id=category.id,
+                playlist=True,
+                is_active=True,
+            )
+            db.add(schedule)
+            db.flush()
+            db.add_all([
+                models.Preroll(filename="one.mp4", path="one.mp4", category_id=category.id, enabled=True),
+                models.Preroll(filename="two.mp4", path="two.mp4", category_id=category.id, enabled=True),
+                models.Preroll(filename="disabled.mp4", path="disabled.mp4", category_id=category.id, enabled=False),
+                models.Setting(
+                    plex_url="http://plex.invalid",
+                    active_category=category.id,
+                    active_schedule_id=schedule.id,
+                ),
+            ])
+            db.commit()
+            self.category_id = category.id
+
+    def tearDown(self):
+        self.engine.dispose()
+
+    def _patch_verification(self, connector):
+        return patch.multiple(
+            scheduler_module,
+            SessionLocal=self.Session,
+            _localized_now=MagicMock(return_value=self.now),
+            PlexConnector=MagicMock(return_value=connector),
+            _scheduler_log=MagicMock(),
+            _scheduler_verbose=MagicMock(),
+        )
+
+    def test_verification_uses_playlist_delimiter_and_ignores_disabled_prerolls(self):
+        connector = MagicMock()
+        expected = ",".join([os.path.abspath("one.mp4"), os.path.abspath("two.mp4")])
+        connector.get_preroll.return_value = expected
+        scheduler = scheduler_module.Scheduler()
+
+        with self._patch_verification(connector), patch.object(
+            scheduler, "_apply_category_to_plex", return_value=True
+        ) as apply_category:
+            scheduler._verify_and_reapply_if_needed()
+
+        apply_category.assert_not_called()
+
+    def test_verification_reapply_preserves_the_tracked_schedule_mode(self):
+        connector = MagicMock()
+        connector.get_preroll.return_value = "wrong"
+        scheduler = scheduler_module.Scheduler()
+
+        with self._patch_verification(connector), patch.object(
+            scheduler, "_apply_category_to_plex", return_value=True
+        ) as apply_category:
+            scheduler._verify_and_reapply_if_needed()
+
+        apply_category.assert_called_once()
+        self.assertEqual(apply_category.call_args.args[0], self.category_id)
+        self.assertTrue(apply_category.call_args.kwargs["schedule"].playlist)
+
+    def test_a_reapply_held_by_the_playback_guard_is_not_a_warning(self):
+        # Production, October 7: a reapply waiting on a movie logged "Failed
+        # to reapply prerolls to Plex" every five minutes for 40 minutes, which
+        # reads as Prerolls Max not setting prerolls at all.
+        connector = MagicMock()
+        connector.get_preroll.return_value = "old list"
+        log = MagicMock()
+        scheduler = scheduler_module.Scheduler()
+        scheduler._deferred_write_since = self.now
+
+        with self._patch_verification(connector), patch.object(scheduler_module, "_scheduler_log", log), \
+                patch.object(scheduler, "_apply_category_to_plex",
+                             return_value=scheduler_module.ApplyResult(plex=False)):
+            scheduler._verify_and_reapply_if_needed()
+
+        self.assertEqual([c for c in log.call_args_list if c.kwargs.get("level") == "WARNING"], [])
+        self.assertFalse(any("mismatch" in str(c.args[0]) for c in log.call_args_list))
+
+    def test_a_real_reapply_failure_still_warns(self):
+        connector = MagicMock()
+        connector.get_preroll.return_value = "old list"
+        log = MagicMock()
+        scheduler = scheduler_module.Scheduler()
+
+        with self._patch_verification(connector), patch.object(scheduler_module, "_scheduler_log", log), \
+                patch.object(scheduler, "_apply_category_to_plex",
+                             return_value=scheduler_module.ApplyResult(plex=False)):
+            scheduler._verify_and_reapply_if_needed()
+
+        warnings = [c for c in log.call_args_list if c.kwargs.get("level") == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Failed to reapply", warnings[0].args[0])
+
+    def test_verification_skips_installs_without_plex(self):
+        # Jellyfin/Emby only: there is no Plex preroll field to check, so no
+        # "mismatch", no reapply and no warning every five minutes.
+        with self.Session() as db:
+            db.query(models.Setting).first().plex_url = None
+            db.commit()
+        connector = MagicMock()
+        log = MagicMock()
+        scheduler = scheduler_module.Scheduler()
+
+        with self._patch_verification(connector), patch.object(scheduler_module, "_scheduler_log", log), \
+                patch.object(scheduler, "_apply_category_to_plex", return_value=True) as apply_category:
+            scheduler._verify_and_reapply_if_needed()
+
+        apply_category.assert_not_called()
+        connector.get_preroll.assert_not_called()
+        log.assert_not_called()
+        self.assertEqual(scheduler._last_verification_time, self.now)
+
+
+if __name__ == "__main__":
+    unittest.main()

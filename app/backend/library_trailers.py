@@ -1,0 +1,899 @@
+"""NeX-Up Library Trailers: trailers for movies already in the library.
+
+Separate from Coming Soon on purpose. Coming Soon trailers are about what is
+*not* in the library yet and are removed once the movie arrives; these are
+about what already is. They have their own settings, their own table
+(LibraryTrailer) and their own folder, so neither feature can clean up the
+other's files.
+
+Where a trailer comes from, in order:
+  1. A trailer file already next to the movie ("Movie-trailer.mp4", or a
+     "Trailers" folder), found through Radarr's movie folder. Prerolls Max only
+     ever reads these and never deletes them.
+  2. A download from YouTube through Radarr's trailer link, into
+     <NeX-Up storage>/library. Only these count toward the limits, and only
+     these are ever deleted.
+
+Changing the filters decides what is downloaded *next*; it never throws
+trailers away. A trailer whose movie stops matching is kept, still plays, and
+is marked outside the selection - first in line to make room when the limits
+are reached, or removed on request. Only a movie leaving the library, or its
+file disappearing, removes a trailer on its own.
+
+Downloads rotate: once the limits are reached, each sync swaps a few of the
+oldest downloads for movies that don't have one yet, so the selection keeps
+changing.
+"""
+from __future__ import annotations
+
+import asyncio
+import datetime
+import json
+import os
+import random
+import sys
+from typing import Optional
+
+import backend.models as models
+from backend import trailer_quotas as quotas
+from backend.timeutil import utcnow
+
+VIDEO_EXTS = (".mp4", ".mkv", ".m4v", ".mov", ".avi", ".webm")
+ROTATE_PER_SYNC = 3          # downloads swapped per sync once full
+ROTATE_MIN_AGE_DAYS = 7      # a download plays for at least this long first
+RETRY_ERROR_DAYS = 3         # wait before retrying a failed download
+PREVIEW_LIMIT = 500
+
+PRIORITIES = ("newest", "rating", "popular", "random")
+AGE_RATINGS = ("G", "PG", "PG-13", "R", "NC-17", "Unrated")
+
+MODES = ("filters", "picked")
+
+DEFAULT_CONFIG = {
+    "enabled": False,
+    # How movies are chosen: by the filters below, or hand-picked. Picks are
+    # kept apart from the filters so switching modes loses neither.
+    "mode": "filters",
+    "picked": [],            # Radarr movie ids, in hand-pick mode
+    # Which movies. Every filter is optional; an empty one doesn't narrow.
+    "genres": [],            # include movies with any of these
+    "exclude_genres": [],    # ...but none of these
+    "certifications": [],    # age ratings, from AGE_RATINGS
+    "languages": [],         # original language names
+    "tags": [],              # Radarr tag ids
+    "year_from": 0,
+    "year_to": 0,
+    "min_imdb": 0.0,         # IMDb score out of 10
+    "min_rt": 0,             # Rotten Tomatoes percent
+    "recent_days": 0,        # only movies added in the last N days; 0 = any
+    "always_include": [],    # Radarr movie ids included whatever the filters say
+    "never_include": [],     # Radarr movie ids never included
+    "priority": "newest",    # which matching movies are downloaded first
+    "use_local": True,       # use trailer files already next to movies
+    "download": True,        # download the rest from YouTube via Radarr
+    "max_downloads": 25,
+    "max_gb": 5.0,
+    "quotas": [],            # optional minimum targets; empty preserves legacy rotation
+    "path_mappings": [],     # [{"radarr": "/movies", "local": "D:\\Movies"}]
+}
+
+
+# ---- Settings ----------------------------------------------------------
+
+def load_config(setting) -> dict:
+    config = dict(DEFAULT_CONFIG)
+    raw = getattr(setting, "library_trailers_config", None) if setting else None
+    if raw:
+        try:
+            stored = json.loads(raw)
+            if isinstance(stored, dict):
+                # normalize_config drops unknown keys, after reading legacy ones.
+                config.update(stored)
+        except Exception:
+            pass
+    return normalize_config(config)
+
+
+def _names(value) -> list:
+    seen = {}
+    for item in value if isinstance(value, list) else []:
+        name = str(item).strip()
+        if name:
+            seen.setdefault(name.lower(), name)
+    return list(seen.values())
+
+
+def _ids(value) -> list:
+    out = []
+    for item in value if isinstance(value, list) else []:
+        try:
+            number = int(item)
+        except (TypeError, ValueError):
+            continue
+        if number not in out:
+            out.append(number)
+    return out
+
+
+def normalize_config(config: dict) -> dict:
+    config = dict(config or {})
+    # Settings saved before the genre filter became optional said
+    # include='all' to mean "ignore the genre list".
+    if config.get("include") == "all":
+        config["genres"] = []
+    out = dict(DEFAULT_CONFIG)
+    out.update({k: v for k, v in config.items() if k in DEFAULT_CONFIG})
+    out["enabled"] = bool(out["enabled"])
+    for key in ("genres", "exclude_genres", "languages"):
+        out[key] = _names(out[key])
+    out["certifications"] = [c for c in _names(out["certifications"]) if c in AGE_RATINGS]
+    for key in ("tags", "always_include", "never_include", "picked"):
+        out[key] = _ids(out[key])
+    if out["mode"] not in MODES:
+        out["mode"] = "filters"
+    out["always_include"] = [i for i in out["always_include"] if i not in out["never_include"]]
+    for key, lo, hi, cast in (("recent_days", 0, 3650, int), ("max_downloads", 0, 500, int),
+                              ("max_gb", 0.0, 500.0, float), ("year_from", 0, 2200, int),
+                              ("year_to", 0, 2200, int), ("min_imdb", 0.0, 10.0, float), ("min_rt", 0, 100, int)):
+        try:
+            out[key] = min(max(cast(out[key]), lo), hi)
+        except (TypeError, ValueError):
+            out[key] = DEFAULT_CONFIG[key]
+    if out["priority"] not in PRIORITIES:
+        out["priority"] = "newest"
+    out["use_local"] = bool(out["use_local"])
+    out["download"] = bool(out["download"])
+    out["quotas"] = quotas.normalize_quotas(out["quotas"])
+    maps = []
+    for m in out["path_mappings"] if isinstance(out["path_mappings"], list) else []:
+        if isinstance(m, dict) and str(m.get("radarr", "")).strip() and str(m.get("local", "")).strip():
+            maps.append({"radarr": str(m["radarr"]).strip(), "local": str(m["local"]).strip()})
+    out["path_mappings"] = maps
+    return out
+
+
+def save_config(setting, updates: dict) -> dict:
+    if 'quotas' in (updates or {}):
+        quotas.normalize_quotas(updates['quotas'], strict=True)
+    config = load_config(setting)
+    config.update({k: v for k, v in (updates or {}).items() if k in DEFAULT_CONFIG})
+    config = normalize_config(config)
+    setting.library_trailers_config = json.dumps(config)
+    return config
+
+
+# ---- Radarr movies -----------------------------------------------------
+
+def _parse_date(value) -> Optional[datetime.datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def movie_added(movie: dict) -> Optional[datetime.datetime]:
+    """When the movie joined the library: Radarr's "Added" date.
+
+    Not the file's dateAdded, which Radarr resets whenever a file is renamed,
+    upgraded or re-imported - a library-wide rename made hundreds of old
+    movies look brand new. The file date is only a fallback for a movie with
+    no added date."""
+    return _parse_date(movie.get("added")) or _parse_date((movie.get("movieFile") or {}).get("dateAdded"))
+
+
+def movie_poster(movie: dict) -> Optional[str]:
+    for image in movie.get("images") or []:
+        if str(image.get("coverType", "")).lower() == "poster":
+            return image.get("remoteUrl") or image.get("url")
+    return None
+
+
+def movie_rating(movie: dict, source: str) -> Optional[float]:
+    value = ((movie.get("ratings") or {}).get(source) or {}).get("value")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def movie_certification(movie: dict) -> str:
+    """The movie's age rating, with blanks and NR both reported as Unrated."""
+    cert = str(movie.get("certification") or "").strip().upper()
+    return cert if cert in AGE_RATINGS else "Unrated"
+
+
+def movie_language(movie: dict) -> Optional[str]:
+    return (movie.get("originalLanguage") or {}).get("name") or None
+
+
+def movie_matches(movie: dict, config: dict, now: Optional[datetime.datetime] = None) -> bool:
+    """Whether a movie belongs in the library trailer selection."""
+    if not movie.get("hasFile"):
+        return False
+    if config.get("mode") == "picked":
+        return movie.get("id") in config["picked"]
+    if movie.get("id") in config["never_include"]:
+        return False
+    if movie.get("id") in config["always_include"]:
+        return True
+    genres = {str(g).lower() for g in movie.get("genres") or []}
+    if config["genres"] and not genres & {g.lower() for g in config["genres"]}:
+        return False
+    if config["exclude_genres"] and genres & {g.lower() for g in config["exclude_genres"]}:
+        return False
+    if config["certifications"] and movie_certification(movie) not in config["certifications"]:
+        return False
+    if config["languages"] and (movie_language(movie) or "").lower() not in {l.lower() for l in config["languages"]}:
+        return False
+    if config["tags"] and not set(movie.get("tags") or []) & set(config["tags"]):
+        return False
+    year = movie.get("year") or 0
+    if config["year_from"] and year < config["year_from"]:
+        return False
+    if config["year_to"] and (not year or year > config["year_to"]):
+        return False
+    if config["min_imdb"] and (movie_rating(movie, "imdb") or 0) < config["min_imdb"]:
+        return False
+    if config["min_rt"] and (movie_rating(movie, "rottenTomatoes") or 0) < config["min_rt"]:
+        return False
+    if config["recent_days"]:
+        added = movie_added(movie)
+        cutoff = (now or utcnow()) - datetime.timedelta(days=config["recent_days"])
+        if not added or added < cutoff:
+            return False
+    return True
+
+
+def order_candidates(movies: list, config: dict) -> list:
+    """Matching movies in the order they should get a trailer: always-include
+    first, then by the chosen priority."""
+    priority = config["priority"]
+    if priority == "random":
+        ordered = list(movies)
+        random.shuffle(ordered)
+    elif priority == "rating":
+        ordered = sorted(movies, key=lambda m: (movie_rating(m, "imdb") or 0, movie_rating(m, "tmdb") or 0), reverse=True)
+    elif priority == "popular":
+        ordered = sorted(movies, key=lambda m: float(m.get("popularity") or 0), reverse=True)
+    else:
+        ordered = sorted(movies, key=lambda m: movie_added(m) or datetime.datetime.min, reverse=True)
+    pinned = [m for m in ordered if m.get("id") in config["always_include"]]
+    return pinned + [m for m in ordered if m.get("id") not in config["always_include"]]
+
+
+def facets(movies: list) -> dict:
+    """What the library offers to filter on, with how many movies each covers."""
+    in_library = [m for m in movies if m.get("hasFile")]
+    certs, langs = {}, {}
+    for m in in_library:
+        cert = movie_certification(m)
+        certs[cert] = certs.get(cert, 0) + 1
+        lang = movie_language(m)
+        if lang:
+            langs[lang] = langs.get(lang, 0) + 1
+    years = [m.get("year") for m in in_library if m.get("year")]
+    return {
+        "genres": library_genres(movies),
+        "certifications": [{"name": c, "count": certs.get(c, 0)} for c in AGE_RATINGS if certs.get(c)],
+        "languages": [{"name": n, "count": c} for n, c in sorted(langs.items(), key=lambda kv: -kv[1])],
+        "year_min": min(years) if years else None,
+        "year_max": max(years) if years else None,
+    }
+
+
+def poster_thumb(url: Optional[str]) -> Optional[str]:
+    """TMDB serves posters at several sizes; lists only need a small one."""
+    return url.replace("/t/p/original/", "/t/p/w185/") if url else url
+
+
+def movie_summary(movie: dict) -> dict:
+    return {
+        "id": movie.get("id"),
+        "title": movie.get("title"),
+        "year": movie.get("year"),
+        "poster_url": poster_thumb(movie_poster(movie)),
+        "certification": movie_certification(movie),
+        "imdb": movie_rating(movie, "imdb"),
+        "genres": movie.get("genres") or [],
+        "has_trailer_link": bool(movie.get("youTubeTrailerId")),
+    }
+
+
+def library_genres(movies: list) -> list:
+    """[{"name", "count"}] for every genre across movies in the library."""
+    counts = {}
+    names = {}
+    for movie in movies:
+        if not movie.get("hasFile"):
+            continue
+        for g in movie.get("genres") or []:
+            key = str(g).lower()
+            names.setdefault(key, str(g))
+            counts[key] = counts.get(key, 0) + 1
+    return sorted(({"name": names[k], "count": c} for k, c in counts.items()), key=lambda x: x["name"].lower())
+
+
+# ---- Local trailer files -----------------------------------------------
+
+def map_radarr_path(path: Optional[str], mappings: list) -> Optional[str]:
+    """Translate a folder as Radarr sees it into one Prerolls Max can open."""
+    if not path:
+        return None
+    best = None
+    for m in mappings:
+        src = m["radarr"].rstrip("/\\")
+        norm = path.replace("\\", "/")
+        cmp_path, cmp_src = (norm.lower(), src.replace("\\", "/").lower()) if sys.platform.startswith("win") else (norm, src.replace("\\", "/"))
+        if (cmp_path == cmp_src or cmp_path.startswith(cmp_src + "/")) and (best is None or len(src) > len(best["radarr"])):
+            best = m
+    if not best:
+        return path
+    rest = path.replace("\\", "/")[len(best["radarr"].rstrip("/\\")):].lstrip("/")
+    return os.path.join(best["local"], *rest.split("/")) if rest else best["local"]
+
+
+def find_local_trailer(folder: Optional[str]) -> Optional[str]:
+    """A trailer file next to a movie, using the naming Plex, Jellyfin and Emby
+    share: "<name>-trailer.<ext>" (also ".trailer" / "_trailer"), "trailer.<ext>",
+    or anything inside a "Trailers" subfolder."""
+    if not folder or not os.path.isdir(folder):
+        return None
+    try:
+        entries = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    for name in entries:
+        stem, ext = os.path.splitext(name)
+        if ext.lower() in VIDEO_EXTS:
+            low = stem.lower()
+            if low == "trailer" or low.endswith(("-trailer", ".trailer", "_trailer")):
+                return os.path.join(folder, name)
+    for name in entries:
+        if name.lower() == "trailers" and os.path.isdir(os.path.join(folder, name)):
+            try:
+                for inner in sorted(os.listdir(os.path.join(folder, name))):
+                    if os.path.splitext(inner)[1].lower() in VIDEO_EXTS:
+                        return os.path.join(folder, name, inner)
+            except OSError:
+                return None
+    return None
+
+
+# ---- Storage -----------------------------------------------------------
+
+def library_dir(storage: str) -> str:
+    return os.path.join(storage, "library")
+
+
+def _inside(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
+    except ValueError:
+        return False
+
+
+def remove_row(db, row, storage: Optional[str]) -> None:
+    """Forget a library trailer. A downloaded file inside Prerolls Max's library
+    folder is deleted with it; anything else - a trailer next to the movie -
+    is never touched."""
+    if row.source == "download" and row.local_path and storage and _inside(row.local_path, library_dir(storage)):
+        try:
+            if os.path.isfile(row.local_path):
+                os.remove(row.local_path)
+        except OSError:
+            pass
+    db.delete(row)
+
+
+def eligible_library_trailers(db) -> list:
+    """Every library trailer a block could play: available, enabled, on disk."""
+    rows = db.query(models.LibraryTrailer).filter(
+        models.LibraryTrailer.status == "available",
+        models.LibraryTrailer.is_enabled == True,  # noqa: E712
+    ).all()
+    return [r for r in rows if r.local_path and os.path.exists(r.local_path)]
+
+
+def storage_summary(db) -> dict:
+    rows = db.query(models.LibraryTrailer).all()
+    downloads = [r for r in rows if r.source == "download" and r.status == "available"]
+    return {
+        "local": sum(1 for r in rows if r.source == "local" and r.status == "available"),
+        "downloaded": len(downloads),
+        "downloaded_gb": round(sum((r.file_size_mb or 0) for r in downloads) / 1024, 2),
+        "errors": sum(1 for r in rows if r.status == "error"),
+        "outside": sum(1 for r in rows if r.status == "available" and r.in_selection is False),
+    }
+
+
+# ---- Sync --------------------------------------------------------------
+
+def _upsert(db, rows_by_movie, movie, **fields):
+    row = rows_by_movie.get(movie["id"])
+    if row is None:
+        row = models.LibraryTrailer(radarr_movie_id=movie["id"])
+        db.add(row)
+        rows_by_movie[movie["id"]] = row
+    row.tmdb_id = movie.get("tmdbId")
+    row.title = movie.get("title")
+    row.year = movie.get("year")
+    row.genres = json.dumps(movie.get("genres") or [])
+    row.certification = movie.get("certification") or None
+    row.added_to_library = movie_added(movie)
+    row.poster_url = movie_poster(movie)
+    for key, value in fields.items():
+        setattr(row, key, value)
+    return row
+
+
+async def sync_library_trailers(db, movies: list, storage: str, config: dict, downloader=None,
+                                progress: Optional[dict] = None, download_delay: float = 5.0,
+                                now: Optional[datetime.datetime] = None) -> dict:
+    """Bring the library trailer set in line with the settings.
+
+    ``movies`` is Radarr's full movie list. ``downloader`` needs an async
+    ``download_trailer(url, title, tmdb_id=, year=)`` returning {"path",
+    "size_mb", "duration"} or None; it is only used when downloading is on.
+    """
+    now = now or utcnow()
+    progress = progress if progress is not None else {}
+    result = {"local_found": 0, "downloaded": 0, "removed": 0, "rotated": 0, "failed": 0, "candidates": 0}
+    progress.setdefault("log", [])
+    progress["counts"] = result
+
+    candidates = order_candidates([m for m in movies if movie_matches(m, config, now)], config)
+    wanted = {m["id"]: m for m in candidates}
+    result["candidates"] = len(candidates)
+    rows = db.query(models.LibraryTrailer).all()
+    rows_by_movie = {r.radarr_movie_id: r for r in rows}
+
+    from backend.trailer_filters import refresh_trailer_ratings
+    refresh_trailer_ratings(db, models.LibraryTrailer, movies, "radarr_movie_id", "id")
+
+    # 1. Trailers already next to the movies.
+    _stage(progress, "local", "Looking for trailers next to your movies...")
+    local_for = {}
+    if config["use_local"]:
+        for index, movie in enumerate(candidates, start=1):
+            if index % 50 == 0:
+                progress["scanned"] = index
+                await asyncio.sleep(0)  # let status requests through on a big library
+            for folder in movie_folders(movie):
+                path = find_local_trailer(map_radarr_path(folder, config["path_mappings"]))
+                if path:
+                    local_for[movie["id"]] = path
+                    break
+        progress["scanned"] = len(candidates)
+
+    # 2. Drop only what can no longer play: movies that left the library,
+    #    trailer files that are gone, downloads now covered by a trailer file
+    #    next to the movie, and failed attempts for movies no longer wanted.
+    #    A movie that merely stopped matching the filters keeps its trailer.
+    in_library = {m["id"] for m in movies if m.get("hasFile")}
+    for row in list(rows_by_movie.values()):
+        left_library = row.radarr_movie_id not in in_library
+        superseded = row.source == "download" and row.radarr_movie_id in local_for
+        file_gone = row.status == "available" and not (row.local_path and os.path.exists(row.local_path))
+        stale_local = row.source == "local" and row.radarr_movie_id in wanted and row.radarr_movie_id not in local_for
+        dead_attempt = row.status == "error" and row.radarr_movie_id not in wanted
+        if left_library or superseded or file_gone or stale_local or dead_attempt:
+            if row.status == "available":
+                _event(progress, "removed", row.title, poster=row.poster_url)
+                result["removed"] += 1
+            remove_row(db, row, storage)
+            rows_by_movie.pop(row.radarr_movie_id, None)
+        else:
+            row.in_selection = row.radarr_movie_id in wanted
+
+    for movie_id, path in local_for.items():
+        row = rows_by_movie.get(movie_id)
+        if row is None or row.local_path != path or row.source != "local":
+            _upsert(db, rows_by_movie, wanted[movie_id], source="local", status="available",
+                    local_path=path, error_message=None, file_size_mb=None, in_selection=True,
+                    downloaded_at=row.downloaded_at if row else now)
+            result["local_found"] += 1
+            _event(progress, "found", wanted[movie_id].get("title"), poster=movie_poster(wanted[movie_id]))
+        else:
+            _upsert(db, rows_by_movie, wanted[movie_id])
+    db.commit()
+
+    if config.get('quotas'):
+        return await _sync_quota_downloads(db, candidates, rows_by_movie, storage, config,
+                                           downloader, progress, result, now, download_delay)
+    if not config["download"]:
+        _stage(progress, "done", "Done")
+        return result
+    _stage(progress, "tidy", "Keeping downloads within your limits...")
+
+    # 3. Downloads: keep within the limits, make room, rotate, then fill.
+    #    Trailers outside the filters are always the first to go, oldest first.
+    def downloads():
+        return sorted((r for r in rows_by_movie.values() if r.source == "download" and r.status == "available"),
+                      key=lambda r: (r.in_selection is not False, r.downloaded_at or datetime.datetime.min))
+
+    def used_gb():
+        return sum((r.file_size_mb or 0) for r in downloads()) / 1024
+
+    def evict(row, kind):
+        _event(progress, kind, row.title, poster=row.poster_url)
+        remove_row(db, row, storage)
+        rows_by_movie.pop(row.radarr_movie_id, None)
+
+    while downloads() and (len(downloads()) > config["max_downloads"] or used_gb() > config["max_gb"]):
+        evict(downloads()[0], "removed")
+        result["removed"] += 1
+
+    retry_before = now - datetime.timedelta(days=RETRY_ERROR_DAYS)
+    # Candidates are already in priority order (always-include first).
+    pool = [m for m in candidates
+            if m["id"] not in rows_by_movie
+            or (rows_by_movie[m["id"]].status == "error"
+                and (rows_by_movie[m["id"]].last_attempt_at or datetime.datetime.min) < retry_before)]
+
+    if pool and downloader is not None:
+        # Room for movies that match: trailers outside the filters give way
+        # first, as many as the new matches need.
+        free = max(config["max_downloads"] - len(downloads()), 0)
+        need = max(min(len(pool), config["max_downloads"]) - free, 0)
+        for row in [r for r in downloads() if r.in_selection is False][:need]:
+            evict(row, "replaced")
+            result["rotated"] += 1
+        # Then, if still full, the usual gentle rotation of matching ones -
+        # except for hand-picked movies, which stay until they're unpicked.
+        full = len(downloads()) >= config["max_downloads"] or used_gb() >= config["max_gb"]
+        if full and config.get("mode") != "picked":
+            rotate_before = now - datetime.timedelta(days=ROTATE_MIN_AGE_DAYS)
+            for row in [r for r in downloads() if (r.downloaded_at or now) < rotate_before][:ROTATE_PER_SYNC]:
+                evict(row, "rotated")
+                result["rotated"] += 1
+    db.commit()
+
+    room = max(config["max_downloads"] - len(downloads()), 0)
+    progress["to_download"] = min(room, len(pool)) if downloader is not None else 0
+    progress["download_done"] = 0
+    _stage(progress, "download", "Downloading trailers..." if progress["to_download"] else "Nothing new to download.")
+    for movie in pool:
+        if len(downloads()) >= config["max_downloads"] or used_gb() >= config["max_gb"]:
+            break
+        if downloader is None:
+            break
+        title = movie.get("title") or "Unknown"
+        progress["status"] = f"Downloading trailer for {title}..."
+        progress["current"] = {"title": title, "year": movie.get("year"), "poster_url": movie_poster(movie)}
+        url = f"https://www.youtube.com/watch?v={movie['youTubeTrailerId']}" if movie.get("youTubeTrailerId") else None
+        row = _upsert(db, rows_by_movie, movie, source="download", trailer_url=url, last_attempt_at=now,
+                      in_selection=True, error_message=None)
+        try:
+            got = await downloader.download_trailer(url, title, tmdb_id=movie.get("tmdbId"), year=movie.get("year"))
+        except Exception as exc:  # the downloader reports most failures as None
+            got = None
+            row.error_message = str(exc)[:500]
+        if got and got.get("path"):
+            row.status = "available"
+            row.local_path = got["path"]
+            row.trailer_url = got.get("source_url") or url
+            row.file_size_mb = got.get("size_mb")
+            row.duration_seconds = got.get("duration")
+            row.downloaded_at = now
+            row.error_message = None
+            result["downloaded"] += 1
+            _event(progress, "downloaded", title, poster=movie_poster(movie))
+        else:
+            row.status = "error"
+            # download_trailer's message leads with an internal CODE: prefix.
+            reason = str(got.get("message") or "").split(":", 1)[-1].strip() if isinstance(got, dict) else ""
+            row.error_message = row.error_message or reason[:500] or "No trailer could be downloaded for this movie."
+            result["failed"] += 1
+            _event(progress, "failed", title, poster=movie_poster(movie))
+        progress["download_done"] = progress.get("download_done", 0) + 1
+        db.commit()
+        if download_delay:
+            await asyncio.sleep(download_delay)
+
+    progress["current"] = None
+    _stage(progress, "done", "Done")
+    return result
+
+
+async def _sync_quota_downloads(db, candidates, rows_by_movie, storage, config,
+                                downloader, progress, result, now, download_delay):
+    """Best-effort targets. Download successfully before replacing working files.
+
+    Only this opt-in path changes rotation. Local files count toward targets
+    but never consume download capacity or become eviction candidates.
+    """
+    import math
+    rules = config['quotas']
+    wanted = {m['id']: m for m in candidates}
+    notes = []
+    size_cache = {}
+    # Keep retained-row metadata aligned with the pool targets and playback,
+    # including titles already at capacity that need no new download.
+    for mid in list(rows_by_movie):
+        if mid in wanted:
+            _upsert(db, rows_by_movie, wanted[mid])
+    db.commit()
+
+    def downloads():
+        return sorted((r for r in rows_by_movie.values() if r.source == 'download' and r.status == 'available'),
+                      key=lambda r: (r.in_selection is not False, r.is_enabled is not False,
+                                     r.downloaded_at or datetime.datetime.min))
+
+    def size(row):
+        key = (row.local_path, row.file_size_mb)
+        if key in size_cache:
+            return size_cache[key]
+        recorded = row.file_size_mb or 0
+        actual = os.path.getsize(row.local_path) / (1024 * 1024) if row.local_path and os.path.isfile(row.local_path) else 0
+        size_cache[key] = max(recorded if math.isfinite(recorded) else 0, actual)
+        return size_cache[key]
+
+    def have():
+        return quotas.counts(quotas.playable_movies(candidates, rows_by_movie.values()), rules)
+
+    def evict(row, kind):
+        _event(progress, kind, row.title, poster=row.poster_url)
+        remove_row(db, row, storage)
+        rows_by_movie.pop(row.radarr_movie_id, None)
+        result['removed' if kind == 'removed' else 'rotated'] += 1
+
+    if config['download']:
+        # A lowered hard limit takes precedence over soft minimum targets.
+        while downloads() and (len(downloads()) > config['max_downloads']
+                               or sum(size(r) for r in downloads()) > config['max_gb'] * 1024):
+            current = have()
+            def loss(row):
+                m = wanted.get(row.radarr_movie_id)
+                return sum(quotas.matches(m, q) and n <= q['min'] for q, n in zip(rules, current)) if m and row.is_enabled is not False else 0
+            evict(min(downloads(), key=loss), 'removed')
+            notes.append('The configured download or storage limit required removing trailers')
+        db.commit()
+
+    retry_before = now - datetime.timedelta(days=RETRY_ERROR_DAYS)
+    pool = [m for m in candidates if m['id'] not in rows_by_movie or
+            (rows_by_movie[m['id']].status == 'error' and rows_by_movie[m['id']].is_enabled is not False
+             and (rows_by_movie[m['id']].last_attempt_at or datetime.datetime.min) < retry_before)]
+    if any(r.status == 'error' and r.radarr_movie_id in wanted for r in rows_by_movie.values()):
+        notes.append('Some failed trailers are waiting for the normal retry interval')
+    rotation_left = ROTATE_PER_SYNC
+    rotate_before = now - datetime.timedelta(days=ROTATE_MIN_AGE_DAYS)
+    progress['to_download'] = len(pool) if config['download'] and downloader else 0
+    progress['download_done'] = 0
+    _stage(progress, 'download', 'Filling trailer targets...')
+
+    def victims(movie, incoming_size, repair):
+        existing = downloads()
+        floors = [min(n, q['min']) for n, q in zip(current, rules)]
+        after = [n + int(quotas.matches(movie, q)) for n, q in zip(current, rules)]
+        chosen = []
+        used = sum(size(r) for r in existing) + incoming_size
+        routine = 0
+        for row in existing:
+            if len(existing) + 1 - len(chosen) <= config['max_downloads'] and used <= config['max_gb'] * 1024:
+                break
+            if row.radarr_movie_id in config['always_include']:
+                continue
+            if not repair and row.in_selection is not False:
+                if config['mode'] == 'picked' or (row.downloaded_at or now) >= rotate_before or routine >= rotation_left:
+                    continue
+            m = wanted.get(row.radarr_movie_id)
+            loss = [int(bool(m and row.is_enabled is not False and quotas.matches(m, q))) for q in rules]
+            if any(n - lost < floor for n, lost, floor in zip(after, loss, floors)):
+                continue
+            chosen.append(row)
+            used -= size(row)
+            after = [n - lost for n, lost in zip(after, loss)]
+            if row.in_selection is not False and not repair:
+                routine += 1
+        if len(existing) + 1 - len(chosen) > config['max_downloads'] or used > config['max_gb'] * 1024:
+            return None
+        return chosen
+
+    possible = quotas.counts(pool, rules)
+    priority_index = {m['id']: i for i, m in enumerate(pool)}
+    previous_counts = None
+    visited = 0
+    current = have()
+    while pool and config['download'] and downloader is not None:
+        if config['max_downloads'] <= 0 or config['max_gb'] <= 0:
+            notes.append('Download count or storage limit is zero')
+            break
+        # Overlapping targets share one trailer. Scarce targets break ties,
+        # followed by the existing Download first ordering.
+        if current != previous_counts:
+            pool.sort(key=lambda m: (quotas.gain(m, rules, current),
+                    sum(1 / max(total, 1) for q, n, total in zip(rules, current, possible)
+                        if n < q['min'] and quotas.matches(m, q)), -priority_index[m['id']]), reverse=True)
+            previous_counts = current
+        movie = pool.pop(0)
+        visited += 1
+        if visited % 50 == 0:
+            await asyncio.sleep(0)
+        repair = quotas.gain(movie, rules, current) > 0
+        if victims(movie, 0, repair) is None:
+            notes.append('Capacity is full: other targets, pinned movies, or rotation protection prevent replacement')
+            continue
+        title = movie.get('title') or 'Unknown'
+        progress['status'] = f'Downloading trailer for {title}...'
+        progress['current'] = {'title': title, 'year': movie.get('year'), 'poster_url': movie_poster(movie)}
+        url = f"https://www.youtube.com/watch?v={movie['youTubeTrailerId']}" if movie.get('youTubeTrailerId') else None
+        error = None
+        try:
+            got = await downloader.download_trailer(url, title, tmdb_id=movie.get('tmdbId'), year=movie.get('year'))
+        except Exception as exc:
+            got, error = None, str(exc)[:500]
+        if isinstance(got, dict) and got.get('error') and not got.get('path'):
+            error = str(got.get('message') or '').split(':', 1)[-1].strip()[:500] or None
+        path = got.get('path') if got else None
+        valid = bool(path and os.path.isfile(path) and _inside(os.path.realpath(path), os.path.realpath(library_dir(storage))))
+        if valid:
+            try:
+                reported_size = float(got.get('size_mb') or 0)
+            except (ValueError, TypeError):
+                reported_size = 0
+            incoming_size = max(os.path.getsize(path) / (1024 * 1024), reported_size)
+            chosen = victims(movie, incoming_size, repair) if math.isfinite(incoming_size) else None
+            if chosen is None:
+                # This new file has no database owner yet. Keep working files.
+                if not any(r.local_path == path for r in rows_by_movie.values()):
+                    os.remove(path)
+                valid = False
+                error = 'Matching trailer could not fit the storage limit without reducing another target.'
+                notes.append(error)
+        if valid:
+            for row in chosen:
+                if not repair and row.in_selection is not False:
+                    rotation_left -= 1
+                evict(row, 'replaced' if repair else 'rotated')
+            _upsert(db, rows_by_movie, movie, source='download', status='available', local_path=path,
+                    trailer_url=got.get('source_url') or url, file_size_mb=incoming_size, duration_seconds=got.get('duration'),
+                    downloaded_at=now, last_attempt_at=now, error_message=None, in_selection=True)
+            result['downloaded'] += 1
+            _event(progress, 'downloaded', title, poster=movie_poster(movie))
+        else:
+            _upsert(db, rows_by_movie, movie, source='download', status='error', trailer_url=url,
+                    last_attempt_at=now, error_message=error or 'No usable trailer could be downloaded.', in_selection=True)
+            result['failed'] += 1
+            _event(progress, 'failed', title, poster=movie_poster(movie))
+            notes.append('Some matching trailers could not be downloaded')
+        db.commit()
+        if valid:
+            current = have()
+        progress['download_done'] += 1
+        if download_delay:
+            await asyncio.sleep(download_delay)
+
+    if config['download'] and downloader is None:
+        notes.append('The downloader is unavailable')
+    result['quotas'] = quotas.report(candidates, rows_by_movie.values(), config, notes)
+    progress['current'] = None
+    _stage(progress, 'done', 'Done: some trailer targets remain unmet' if any(q['shortfall'] for q in result['quotas']) else 'Done')
+    return result
+
+
+def _stage(progress: dict, stage: str, status: str) -> None:
+    progress["stage"] = stage
+    progress["status"] = status
+
+
+LOG_KEEP = 40
+
+
+def _event(progress: dict, kind: str, title, poster=None) -> None:
+    """Add a line to the sync's activity feed (newest first, capped)."""
+    log = progress.setdefault("log", [])
+    log.insert(0, {"kind": kind, "title": title or "Unknown", "poster_url": poster,
+                   "at": utcnow().isoformat()})
+    del log[LOG_KEEP:]
+
+
+class LibraryTrailerError(Exception):
+    """A reason the sync can't run, worded for the user."""
+
+
+# Shared by the Sync button and the NeX-Up auto-refresh so they never overlap.
+sync_progress = {"running": False, "status": "", "stage": None, "result": None, "error": None,
+                 "started_at": None, "finished_at": None, "log": [], "counts": None,
+                 "current": None, "to_download": 0, "download_done": 0, "scanned": 0, "candidates": 0}
+
+# Radarr's movie list, briefly cached: the filter preview asks on every change
+# and a large library is a big response.
+MOVIE_CACHE_SECONDS = 120
+_movie_cache = {"key": None, "at": 0.0, "library": None}
+
+
+async def fetch_library(db, fresh: bool = False):
+    """Every connected Radarr's movies and tags as one library (see
+    radarr_servers). Only a complete read is cached."""
+    import time
+    from backend import radarr_servers
+    cache_key = tuple((s["id"], s["url"], s["api_key"]) for s in radarr_servers.servers(db))
+    if (not fresh and _movie_cache["key"] == cache_key and _movie_cache["library"] is not None
+            and time.monotonic() - _movie_cache["at"] < MOVIE_CACHE_SECONDS):
+        return _movie_cache["library"]
+    library = await radarr_servers.fetch_library(db, with_tags=True)
+    if not library.failed:
+        _movie_cache.update(key=cache_key, at=time.monotonic(), library=library)
+    return library
+
+
+def canonical_config(config: dict, library) -> dict:
+    """The settings with picked/always/never movies keyed as the library
+    keys them now, for a movie that has since gained a copy on another Radarr."""
+    out = dict(config)
+    for key in ("picked", "always_include", "never_include"):
+        out[key] = _ids([library.canonical(i) for i in config.get(key) or []])
+    return out
+
+
+def movie_folders(movie: dict) -> list:
+    """The movie's folder, then those of its copies on other Radarrs."""
+    folders = []
+    for path in [movie.get("path")] + [c.get("path") for c in movie.get("nexrollCopies") or []]:
+        if path and path not in folders:
+            folders.append(path)
+    return folders
+
+
+async def run_sync(db) -> dict:
+    """Sync library trailers from Radarr using the saved settings."""
+    if sync_progress["running"]:
+        raise LibraryTrailerError("A library trailer sync is already running.")
+    setting = db.query(models.Setting).first()
+    config = load_config(setting)
+    if not config["enabled"]:
+        raise LibraryTrailerError("Trailers for movies you have are turned off.")
+    url = getattr(setting, "nexup_radarr_url", None)
+    key = getattr(setting, "nexup_radarr_api_key", None)
+    storage = getattr(setting, "nexup_storage_path", None)
+    if not (url and key):
+        raise LibraryTrailerError("Connect Radarr on the Movie trailers page first.")
+    if not storage:
+        raise LibraryTrailerError("Pick a folder for trailers under Trailer settings first.")
+
+    sync_progress.update(running=True, stage="read", status="Reading your library from Radarr...", result=None,
+                         error=None, started_at=utcnow().isoformat(), finished_at=None,
+                         log=[], counts=None, current=None, to_download=0, download_done=0, scanned=0, candidates=0)
+    try:
+        from backend.radarr_connector import TrailerDownloader
+        from backend import radarr_servers
+        library = await fetch_library(db, fresh=True)
+        if library.failed:
+            # A Radarr that can't be read would look like every one of its
+            # movies had left the library, and their trailers would go.
+            names = ", ".join(library.failed_names())
+            raise LibraryTrailerError(f"Couldn't read your movies from {names}, so nothing was changed. "
+                                      "Check that it's running, then try again.")
+        movies = library.movies
+        if radarr_servers.rehome(db, models.LibraryTrailer, library):
+            db.commit()
+        config = canonical_config(config, library)
+        sync_progress["candidates"] = sum(1 for m in movies if movie_matches(m, config))
+        downloader = None
+        if config["download"]:
+            os.makedirs(library_dir(storage), exist_ok=True)
+            from backend import trailer_language
+            downloader = TrailerDownloader(
+                library_dir(storage),
+                getattr(setting, "nexup_quality", "1080") or "1080",
+                max_duration=getattr(setting, "nexup_max_trailer_duration", 0) or 0,
+                cookies_dir=storage,
+                **trailer_language.downloader_options(setting),
+            )
+        delay = getattr(setting, "nexup_download_delay", 5) or 0
+        result = await sync_library_trailers(db, movies or [], storage, config, downloader,
+                                             progress=sync_progress, download_delay=delay)
+        sync_progress["result"] = result
+        return result
+    except LibraryTrailerError:
+        raise
+    except Exception as exc:
+        sync_progress["error"] = str(exc)
+        sync_progress["stage"] = "error"
+        raise
+    finally:
+        sync_progress["running"] = False
+        sync_progress["finished_at"] = utcnow().isoformat()

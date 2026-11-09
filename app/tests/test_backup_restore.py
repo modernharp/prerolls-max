@@ -1,0 +1,349 @@
+"""Backups carry what the Backup page says they do, and restores put it back.
+
+Found in the 2.2.1 review: the Plex token and Jellyfin/Emby keys live in the
+OS secret store, so no backup carried them; a restore translated schedule ids
+everywhere except ignored conflicts, which then named unrelated schedules;
+sidebar favorites were left out; the system backup copied nexroll.db while
+recent commits were still in its WAL file; and a system restore kept the old
+machine's folders and brand-asset paths.
+"""
+import ast
+import contextlib
+import copy
+import datetime
+import json
+import os
+import shutil
+import sqlite3
+from types import SimpleNamespace
+from typing import Optional
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
+from backend import media_servers_backup, models, smart_backup, system_collections, unique_names
+from backend.community import ids as community_ids
+from backend.backup_utils import (BackupProblem, clean_backup_payload, normalize_preroll_id,
+                                  remap_preroll_ids_json, remap_sequence_blocks, remap_sequence_json)
+from backend.errors import AppError
+from backend.timeutil import utcnow
+from tests.test_trailer_filters import main_ast
+
+FUNCTIONS = {
+    'backup_database', 'restore_database', '_export_settings', '_restore_settings', '_stamp_backup_taken',
+    '_export_credentials', '_restore_credentials', '_remap_ignored_conflicts', '_snapshot_sqlite',
+    '_fit_restored_database_to_this_install', '_backup_may_include_credentials', '_paths_equal', '_restored_name',
+}
+CONSTANT_PREFIXES = ('_SETTINGS_', '_BACKUP_CREDENTIALS')
+
+
+class FakeSecrets:
+    def __init__(self, **values):
+        self.values = dict(values)
+
+    def __getattr__(self, name):
+        action, _, key = name.partition('_')
+        if action == 'get':
+            return lambda: self.values.get(key)
+        if action == 'set':
+            return lambda value: self.values.__setitem__(key, value) or True
+        raise AttributeError(name)
+
+
+def load(secrets, prerolls_dir='.'):
+    nodes = []
+    for node in main_ast().body:
+        if isinstance(node, ast.FunctionDef) and node.name in FUNCTIONS:
+            node = copy.deepcopy(node)
+            node.decorator_list = []
+            if node.name in ('backup_database', 'restore_database'):  # Depends(get_db) defaults
+                node.args.defaults = [ast.Constant(None) for _ in node.args.defaults]
+            nodes.append(node)
+        elif (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+              and node.targets[0].id.startswith(CONSTANT_PREFIXES)):
+            nodes.append(node)
+    env = dict(
+        models=models, os=os, json=json, datetime=datetime, utcnow=utcnow, text=text, Optional=Optional,
+        HTTPException=HTTPException, app_version='test', secure_store=secrets,
+        log_event=lambda *a, **k: None, _file_log=lambda *a, **k: None,
+        normalize_preroll_id=normalize_preroll_id, remap_preroll_ids_json=remap_preroll_ids_json,
+        remap_sequence_blocks=remap_sequence_blocks, remap_sequence_json=remap_sequence_json,
+        _refresh_schedule_next_run=lambda schedule: None,
+        fs_scanner=SimpleNamespace(reconcile_prerolls=lambda *a, **k: None),
+        PREROLLS_DIR=str(prerolls_dir), data_dir=str(prerolls_dir),
+        _generate_thumbnail_for_preroll=lambda *a: None, _scanner_exclude_trees=lambda db: [],
+        _load_ignored_path_keys=lambda db: set(), _set_last_scan_stats=lambda stats: None,
+        Session=object, Depends=None, Request=object,
+        clean_backup_payload=clean_backup_payload, BackupProblem=BackupProblem, AppError=AppError,
+        smart_backup=smart_backup, community_ids=community_ids, _media_servers_backup=media_servers_backup,
+        unique_names=unique_names, system_collections=system_collections,
+    )
+    exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), '<main-backup>', 'exec'), env)
+    return env
+
+
+_opened = []
+
+
+def session(path):
+    engine = create_engine(f'sqlite:///{path}')
+    models.Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    _opened.append((db, engine))
+    return db
+
+
+@pytest.fixture(autouse=True)
+def _close_databases():
+    # Unclosed SQLite connections raise ResourceWarning since Python 3.13 and
+    # keep the files open, which on Windows stops tmp_path from cleaning up.
+    yield
+    while _opened:
+        db, engine = _opened.pop()
+        db.close()
+        engine.dispose()
+
+
+@pytest.fixture
+def source(tmp_path):
+    db = session(tmp_path / 'source.db')
+    halloween, kids = models.Category(name='Halloween'), models.Category(name="Kids' Night")
+    db.add_all([halloween, kids])
+    db.flush()
+    start = datetime.datetime(2026, 10, 1)
+    # Gaps in the ids, as on any install where schedules have been deleted.
+    schedules = [models.Schedule(id=sid, name=name, type='daily', start_date=start, category_id=halloween.id)
+                 for sid, name in ((7, 'Halloween Month'), (12, 'Movie Night'), (15, 'Christmas'))]
+    db.add_all(schedules)
+    db.add(models.Setting(timezone='America/Chicago', plex_url='http://plex:32400',
+                          ignored_conflicts=json.dumps(['12-7', '15-99'])))
+    db.add(models.NavigationFavorite(scope='local', page='schedules/library', created_at=start))
+    db.add(models.NavigationFavorite(scope='user:1', page='settings', created_at=start))
+    db.commit()
+    yield db
+    db.close()
+
+
+def test_a_json_backup_brings_back_credentials_conflict_ignores_and_favorites(source, tmp_path):
+    src_env = load(FakeSecrets(plex_token='plex-secret', jellyfin_api_key='jf-secret'))
+    backup = json.loads(json.dumps(src_env['backup_database'](db=source), default=str))
+    assert backup['credentials'] == {'plex_token': 'plex-secret', 'jellyfin_api_key': 'jf-secret'}
+
+    target_secrets = FakeSecrets(emby_api_key='kept')
+    target = session(tmp_path / 'target.db')
+    target.add(models.Schedule(name='Old', type='daily', start_date=datetime.datetime(2026, 1, 1)))
+    target.commit()
+    result = load(target_secrets)['restore_database'](backup, db=target)
+
+    assert sorted(result['credentials_restored']) == ['jellyfin_api_key', 'plex_token']
+    assert target_secrets.values == {'plex_token': 'plex-secret', 'jellyfin_api_key': 'jf-secret', 'emby_api_key': 'kept'}
+    names = {s.id: s.name for s in target.query(models.Schedule).all()}
+    ignored = json.loads(target.query(models.Setting).first().ignored_conflicts)
+    # "15-99" named a schedule that was not in the backup, so it is dropped.
+    assert [sorted(names[int(i)] for i in key.split('-')) for key in ignored] == [['Halloween Month', 'Movie Night']]
+    assert [(f.scope, f.page) for f in target.query(models.NavigationFavorite).all()] == [('local', 'schedules/library')]
+    target.close()
+
+
+@pytest.mark.parametrize('headers,query,included', [
+    ({}, {}, True),                          # the Backup page: signed-in session, or sign-in off
+    ({'X-Api-Key': 'nx_read'}, {}, False),   # a read-only automation key must not get the Plex token
+    ({}, {'api_key': 'nx_read'}, False),
+])
+def test_credentials_go_to_the_ui_but_not_to_an_api_key(source, headers, query, included):
+    env = load(FakeSecrets(plex_token='plex-secret'))
+    request = SimpleNamespace(headers=headers, query_params=query)
+    backup = env['backup_database'](request=request, db=source)
+    assert bool(backup['credentials']) is included
+
+
+def test_keys_in_settings_and_extra_arr_servers_go_to_the_ui_only(source):
+    setting = source.query(models.Setting).first()
+    setting.plex_token, setting.nexup_radarr_api_key, setting.nexup_tmdb_api_key = 'plex-db', 'radarr-key', 'tmdb-key'
+    source.add(models.RadarrServer(name='Radarr 4K', url='http://radarr4k:7878', api_key='radarr-4k-key'))
+    source.add(models.SonarrServer(name='Sonarr Anime', url='http://anime:8989', api_key='sonarr-anime-key'))
+    source.commit()
+    env = load(FakeSecrets())
+
+    ui = env['backup_database'](request=SimpleNamespace(headers={}, query_params={}), db=source)
+    assert ui['settings']['plex_token'] == 'plex-db' and ui['settings']['nexup_tmdb_api_key'] == 'tmdb-key'
+    assert ui['radarr_servers'][0]['api_key'] == 'radarr-4k-key'
+
+    keyed = env['backup_database'](request=SimpleNamespace(headers={'X-Api-Key': 'nx_full'}, query_params={}), db=source)
+    assert not set(keyed['settings']) & env['_SETTINGS_SECRET_COLUMNS']
+    assert keyed['settings']['plex_url'] == 'http://plex:32400'  # everything else is still there
+    assert [s['api_key'] for s in keyed['radarr_servers'] + keyed['sonarr_servers']] == ['', '']
+    assert 'radarr-4k-key' not in json.dumps(keyed, default=str)
+
+
+def test_a_backup_without_keys_keeps_this_installs_keys(source, tmp_path):
+    source.add(models.RadarrServer(name='Radarr 4K', url='http://radarr4k:7878', api_key='source-key'))
+    source.add(models.RadarrServer(name='Gone', url='http://gone:7878', api_key='gone-key'))
+    source.commit()
+    backup = json.loads(json.dumps(load(FakeSecrets())['backup_database'](
+        request=SimpleNamespace(headers={'X-Api-Key': 'nx_full'}, query_params={}), db=source), default=str))
+
+    target = session(tmp_path / 'target.db')
+    target.add(models.Setting(plex_token='target-plex', jellyfin_api_key='target-jf'))
+    target.add(models.RadarrServer(name='4K', url='http://RADARR4K:7878/', api_key='target-key'))
+    target.commit()
+    load(FakeSecrets())['restore_database'](backup, db=target)
+
+    setting = target.query(models.Setting).first()
+    assert (setting.plex_token, setting.jellyfin_api_key, setting.plex_url) == ('target-plex', 'target-jf', 'http://plex:32400')
+    # The same Radarr keeps this install's key; one this install has no key for is left out.
+    assert [(s.name, s.url, s.api_key) for s in target.query(models.RadarrServer).all()] == [
+        ('Radarr 4K', 'http://radarr4k:7878', 'target-key')]
+    target.close()
+
+
+def test_an_older_backup_without_schedule_ids_drops_conflict_ignores_it_cannot_translate(source, tmp_path):
+    backup = json.loads(json.dumps(load(FakeSecrets())['backup_database'](db=source), default=str))
+    for schedule in backup['schedules']:
+        schedule.pop('id')
+    target = session(tmp_path / 'target.db')
+    load(FakeSecrets())['restore_database'](backup, db=target)
+    assert json.loads(target.query(models.Setting).first().ignored_conflicts) == []
+    target.close()
+
+
+@pytest.mark.parametrize('raw,expected', [
+    (['7-12'], ['2-3']), (['12-7'], ['2-3']), (['7-15'], ['10-2']),  # text order, as the frontend sorts
+    (['7-99', 'junk', '7'], []), (['7-12', '12-7'], ['2-3']), (None, []), ('not json', []),
+])
+def test_ignored_conflict_keys_follow_the_schedules(raw, expected):
+    remap = load(FakeSecrets())['_remap_ignored_conflicts']
+    assert json.loads(remap(json.dumps(raw) if isinstance(raw, list) else raw, {7: 2, 12: 3, 15: 10})) == expected
+
+
+def test_the_system_backup_database_includes_commits_still_in_the_wal(tmp_path):
+    live = tmp_path / 'live.db'
+    con = sqlite3.connect(live)
+    con.execute('PRAGMA journal_mode=WAL')
+    con.execute('PRAGMA wal_autocheckpoint=0')
+    con.execute('CREATE TABLE categories (name TEXT)')
+    con.execute("INSERT INTO categories VALUES ('Late Addition')")
+    con.commit()
+    # A plain file copy misses the commit, which is what the backup used to take.
+    shutil.copy(live, tmp_path / 'copied.db')
+    with contextlib.closing(sqlite3.connect(tmp_path / 'copied.db')) as copied:
+        assert copied.execute('SELECT count(*) FROM sqlite_master').fetchone()[0] == 0
+
+    snapshot = load(FakeSecrets())['_snapshot_sqlite'](str(live))
+    try:
+        # Closed before the unlink: Windows can't delete an open file, and
+        # since Python 3.13 an unclosed connection can outlive the statement.
+        with contextlib.closing(sqlite3.connect(snapshot)) as copy_con:
+            assert copy_con.execute('SELECT name FROM categories').fetchall() == [('Late Addition',)]
+    finally:
+        os.unlink(snapshot)
+        con.close()
+
+
+def test_a_restored_database_is_pointed_at_this_machines_folders_and_assets(tmp_path):
+    env = load(FakeSecrets())
+    own_folder = tmp_path / 'own-prerolls'
+    own_folder.mkdir()
+    existing_asset = tmp_path / 'still-here.png'
+    existing_asset.write_bytes(b'x')
+    restored = tmp_path / 'restored.db'
+    con = sqlite3.connect(restored)
+    columns = ['preroll_folder', 'nexup_storage_path', *env['_SETTINGS_FILE_PATH_COLUMNS']]
+    con.execute(f"CREATE TABLE settings ({', '.join(c + ' TEXT' for c in columns)})")
+    values = {'preroll_folder': r'D:\Prerolls', 'nexup_storage_path': '/data/nexup',
+              'nexup_dynamic_preroll_custom_logo_path': r'D:\NeXup\dynamic_prerolls\assets\logo.png',
+              'nexup_coming_soon_list_custom_audio_path': '/data/nexup/dynamic_prerolls/assets/gone.mp3',
+              'nexup_dynamic_preroll_custom_backdrop_path': str(existing_asset)}
+    con.execute(f"INSERT INTO settings ({', '.join(values)}) VALUES ({', '.join('?' * len(values))})", tuple(values.values()))
+    con.commit()
+    con.close()
+
+    nexup_root = str(tmp_path / 'NeXup')
+    report = env['_fit_restored_database_to_this_install'](
+        str(restored), str(own_folder), nexup_root, ['nexup/dynamic_prerolls/assets/logo.png'])
+    with contextlib.closing(sqlite3.connect(restored)) as check:
+        row = dict(zip(columns, check.execute(f"SELECT {', '.join(columns)} FROM settings").fetchone()))
+    assert row['preroll_folder'] == str(own_folder)
+    assert row['nexup_storage_path'] == nexup_root and os.path.isdir(nexup_root)
+    assert row['nexup_dynamic_preroll_custom_logo_path'] == os.path.join(nexup_root, 'dynamic_prerolls', 'assets', 'logo.png')
+    assert row['nexup_coming_soon_list_custom_audio_path'] == '/data/nexup/dynamic_prerolls/assets/gone.mp3'  # not in the backup
+    assert row['nexup_dynamic_preroll_custom_backdrop_path'] == str(existing_asset)  # already fine here
+    assert report['assets_relinked'] == 1 and len(report['paths_kept']) == 2
+
+
+def test_a_restored_database_never_names_another_existing_folder_for_nexup(tmp_path):
+    # A crafted backup naming a folder that exists here (on Docker, /app) used
+    # to have the restore write its NeX-Up files there.
+    env = load(FakeSecrets())
+    elsewhere = tmp_path / 'app'
+    elsewhere.mkdir()
+    nexup_root = str(tmp_path / 'NeXup')
+    for storage, expected in ((str(elsewhere), nexup_root), (nexup_root + os.sep, nexup_root + os.sep)):
+        restored = tmp_path / f'restored-{len(storage)}.db'
+        with contextlib.closing(sqlite3.connect(restored)) as con:
+            con.execute('CREATE TABLE settings (nexup_storage_path TEXT)')
+            con.execute('INSERT INTO settings VALUES (?)', (storage,))
+            con.commit()
+        env['_fit_restored_database_to_this_install'](str(restored), None, nexup_root, [])
+        with contextlib.closing(sqlite3.connect(restored)) as check:
+            assert check.execute('SELECT nexup_storage_path FROM settings').fetchone()[0] == expected
+
+
+def test_a_json_restore_skips_brand_assets_that_are_not_on_this_machine(tmp_path):
+    db = session(tmp_path / 'db.db')
+    report = load(FakeSecrets())['_restore_settings'](
+        db, {'nexup_dynamic_preroll_custom_logo_path': r'D:\gone\logo.png', 'timezone': 'UTC'}, {}, {})
+    assert report['skipped_paths'] == [r'nexup_dynamic_preroll_custom_logo_path=D:\gone\logo.png']
+    assert db.query(models.Setting).first().nexup_dynamic_preroll_custom_logo_path is None
+    db.close()
+
+
+def test_a_restore_numbers_schedules_and_playlists_that_share_a_name(source, tmp_path):
+    # A NeXroll database can hold two schedules (or playlists) with one name.
+    halloween = source.query(models.Category).filter(models.Category.name == 'Halloween').first()
+    source.add(models.Schedule(name='movie night', type='daily', start_date=datetime.datetime(2026, 10, 1),
+                               category_id=halloween.id))
+    source.add_all([models.SavedSequence(name='Night', blocks='[]'), models.SavedSequence(name='NIGHT', blocks='[]')])
+    source.commit()
+    backup = json.loads(json.dumps(load(FakeSecrets())['backup_database'](db=source), default=str))
+
+    target = session(tmp_path / 'target.db')
+    result = load(FakeSecrets())['restore_database'](backup, db=target)
+
+    assert sorted(s.name for s in target.query(models.Schedule).all()) == [
+        'Christmas', 'Halloween Month', 'Movie Night', 'movie night (2)']
+    assert sorted(s.name for s in target.query(models.SavedSequence).all()) == ['NIGHT (2)', 'Night']
+    assert result['renamed'] == [
+        'The schedule "movie night" was saved as "movie night (2)", because another schedule already has that name.',
+        'The playlist "NIGHT" was saved as "NIGHT (2)", because another playlist already has that name.',
+    ]
+    target.close()
+
+
+def test_a_nexroll_backup_gets_todays_names_for_the_built_in_collections(tmp_path):
+    # NeXroll named the trailer collections "NeX-Up ..."; here the person also
+    # made a "Movie trailers" of their own, which keeps its name.
+    source = session(tmp_path / 'nexroll.db')
+    source.add_all([models.Category(name='NeX-Up Movie Trailers', is_system=True),
+                    models.Category(name='NeX-Up TV Trailers', is_system=True),
+                    models.Category(name='Movie trailers')])
+    source.commit()
+    backup = json.loads(json.dumps(load(FakeSecrets())['backup_database'](db=source), default=str))
+    for row in backup['categories']:
+        row.pop('system_key', None)  # NeXroll's backups have no keys
+
+    target = session(tmp_path / 'target.db')
+    load(FakeSecrets())['restore_database'](backup, db=target)
+
+    rows = {c.name: c.system_key for c in target.query(models.Category).all()}
+    assert rows == {'Movie trailers (built-in)': 'movie_trailers', 'TV trailers': 'tv_trailers',
+                    'Movie trailers': None}
+
+    # A backup taken now carries the keys, so a second restore keeps them.
+    again = json.loads(json.dumps(load(FakeSecrets())['backup_database'](db=target), default=str))
+    assert {c['name']: c['system_key'] for c in again['categories']}['TV trailers'] == 'tv_trailers'
+    other = session(tmp_path / 'other.db')
+    load(FakeSecrets())['restore_database'](again, db=other)
+    assert {c.name: c.system_key for c in other.query(models.Category).all()} == rows

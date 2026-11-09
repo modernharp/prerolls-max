@@ -1,0 +1,11 @@
+name: Idea or request
+description: Something you would like Prerolls Max to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to be able to do?
+      description: Describe what you are trying to achieve, not only the feature.
+    validations:
+      required: true

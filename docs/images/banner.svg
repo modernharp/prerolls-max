@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="t d">
+  <title id="t">Prerolls Max</title>
+  <desc id="d">Intro videos before your movies — for Plex, Jellyfin and Emby</desc>
+  <!-- Colours and font follow frontend/src/styles/tokens.css. Light by default, dark when the viewer prefers it.
+       Rendered to banner.png (light) and banner-dark.png (dark). -->
+  <style>
+    .bg { fill: #f6f6f9; }
+    .glow { fill: #eceefe; }
+    .card { fill: #ffffff; stroke: #d9d9e3; stroke-width: 1.5; }
+    .thumb-a { fill: url(#ga); }
+    .thumb-b { fill: url(#gb); }
+    .thumb-c { fill: url(#gc); }
+    .line { fill: #d9d9e3; }
+    .name { fill: #15151c; }
+    .tag { fill: #4a4a5a; }
+    .play { fill: #ffffff; }
+    text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0f1016; }
+      .glow { fill: #252950; }
+      .card { fill: #181a22; stroke: #30343f; }
+      .line { fill: #30343f; }
+      .name { fill: #f2f2f7; }
+      .tag { fill: #b6b8c6; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="ga" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#312e81"/>
+    </linearGradient>
+    <linearGradient id="gb" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#9a3412"/>
+    </linearGradient>
+    <linearGradient id="gc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0ea5e9"/><stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <radialGradient id="fade" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-opacity="1" stop-color="#fff"/><stop offset="1" stop-opacity="0" stop-color="#fff"/>
+    </radialGradient>
+    <mask id="soft"><circle cx="1130" cy="160" r="240" fill="url(#fade)"/></mask>
+  </defs>
+
+  <rect class="bg" width="1280" height="320"/>
+  <circle class="glow" cx="1130" cy="160" r="240" mask="url(#soft)"/>
+
+  <!-- Three intro "cards", like the app's library grid -->
+  <g transform="translate(1062 62) rotate(-8) scale(0.85)">
+    <rect class="card" x="0" y="0" width="190" height="142" rx="14"/>
+    <rect class="thumb-b" x="8" y="8" width="174" height="98" rx="8"/>
+    <rect class="line" x="12" y="118" width="110" height="10" rx="5"/>
+  </g>
+  <g transform="translate(1110 122) rotate(6) scale(0.85)">
+    <rect class="card" x="0" y="0" width="190" height="142" rx="14"/>
+    <rect class="thumb-c" x="8" y="8" width="174" height="98" rx="8"/>
+    <rect class="line" x="12" y="118" width="90" height="10" rx="5"/>
+  </g>
+  <g transform="translate(1004 136) rotate(-2) scale(0.85)">
+    <rect class="card" x="0" y="0" width="200" height="150" rx="14"/>
+    <rect class="thumb-a" x="8" y="8" width="184" height="104" rx="8"/>
+    <path class="play" d="M90 44 L118 60 L90 76 Z" stroke="#ffffff" stroke-width="6" stroke-linejoin="round"/>
+    <rect class="line" x="12" y="124" width="120" height="10" rx="5"/>
+  </g>
+
+  <!-- App logo (frontend/public/icons/logo.svg) -->
+  <svg x="80" y="88" width="144" height="144" viewBox="0 0 512 512">
+    <rect width="512" height="512" rx="112" fill="#4338CA"/>
+    <path d="M112 128h288a16 16 0 0 1 16 16v44H96v-44a16 16 0 0 1 16-16z" fill="#FFFFFF"/>
+    <g fill="#4338CA">
+      <path d="M156 128h44l-30 60h-44z"/>
+      <path d="M244 128h44l-30 60h-44z"/>
+      <path d="M332 128h44l-30 60h-44z"/>
+    </g>
+    <rect x="96" y="204" width="320" height="196" rx="24" fill="#FFFFFF"/>
+    <path d="M226 252 L318 302 L226 352 Z" fill="#4338CA" stroke="#4338CA" stroke-width="18" stroke-linejoin="round"/>
+  </svg>
+
+  <text class="name" x="256" y="164" font-size="72" font-weight="800" letter-spacing="-2">Prerolls Max</text>
+  <text class="tag" x="259" y="212" font-size="24" font-weight="500">Intro videos before your movies — for Plex, Jellyfin and Emby</text>
+</svg>

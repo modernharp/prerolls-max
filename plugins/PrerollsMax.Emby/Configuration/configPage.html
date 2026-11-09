@@ -1,0 +1,88 @@
+<div id="PrerollsMaxConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox"
+     data-controller="__plugin/PrerollsMaxIntrosJs">
+
+    <div data-role="content">
+        <div class="content-primary">
+
+            <h2 class="sectionTitle">Prerolls Max Intros</h2>
+            <p class="fieldDescription">
+                Plays the intro videos Prerolls Max chooses before movies and episodes.
+                Prerolls Max can fill these in for you: in Prerolls Max, open Media Servers and press "Set up the plugin for me".
+                Emby plays intros only with Emby Premiere and with Cinema Intros turned on in each app
+                (Settings, Playback).
+            </p>
+
+            <form id="PrerollsMaxConfigForm">
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmUrl">Prerolls Max address</label>
+                    <input is="emby-input" id="pmUrl" type="url" placeholder="http://192.168.1.5:9393" />
+                    <div class="fieldDescription">
+                        The address this Emby server uses to reach Prerolls Max. Not "localhost" if they run in
+                        separate containers.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmKey">API key</label>
+                    <input is="emby-input" id="pmKey" type="password" autocomplete="off" />
+                    <div class="fieldDescription">From Prerolls Max: Settings, Advanced, API keys. Needed when login is on there.</div>
+                </div>
+
+                <div style="margin: 0.5em 0 1.5em;">
+                    <button is="emby-button" type="button" id="pmTest" class="raised emby-button">
+                        <span>Test connection</span>
+                    </button>
+                    <div id="pmTestResult" style="margin-top: 0.8em; padding: 0.6em 0.8em; border-radius: 6px; display: none;"></div>
+                </div>
+
+                <h3 class="sectionTitle">When intros play</h3>
+                <div class="checkboxContainer">
+                    <label>
+                        <input is="emby-checkbox" id="pmMovies" type="checkbox" />
+                        <span>Before movies</span>
+                    </label>
+                </div>
+                <div class="checkboxContainer">
+                    <label>
+                        <input is="emby-checkbox" id="pmEpisodes" type="checkbox" />
+                        <span>Before episodes</span>
+                    </label>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmTimeout">Longest wait for Prerolls Max (seconds)</label>
+                    <input is="emby-input" id="pmTimeout" type="number" min="1" max="30" />
+                    <div class="fieldDescription">
+                        If Prerolls Max takes longer, playback starts with the intros it chose last time (or none).
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmBinge">Hours between episodes that still count as one sitting</label>
+                    <input is="emby-input" id="pmBinge" type="number" min="1" max="48" />
+                    <div class="fieldDescription">Used by "first episode only" in Prerolls Max.</div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmCache">Space for downloaded intros (MB)</label>
+                    <input is="emby-input" id="pmCache" type="number" min="256" />
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmFrom">Intro folder as Prerolls Max sees it (optional)</label>
+                    <input is="emby-input" id="pmFrom" type="text" placeholder="/data/prerolls" />
+                </div>
+                <div class="inputContainer">
+                    <label class="inputLabel" for="pmTo">The same folder as Emby sees it (optional)</label>
+                    <input is="emby-input" id="pmTo" type="text" placeholder="/media/prerolls" />
+                </div>
+
+                <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                    <span>Save</span>
+                </button>
+                <div id="pmSaveResult" style="margin-top: 0.8em; font-weight: 600;"></div>
+            </form>
+        </div>
+    </div>
+</div>

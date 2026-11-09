@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    One project, two builds from the same sources:
+      net9.0  -> Jellyfin 10.11.x (built against 10.11.0)
+      net10.0 -> Jellyfin 12.x    (built against 12.0.0, defines JELLYFIN12)
+    Jellyfin refuses a plugin that references a newer Jellyfin assembly than the
+    server has, so each build pins the first release of its series; it then loads
+    on every later release of that series.
+    Version: ../Directory.Build.props. Packaging: ../build.sh.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
+    <RootNamespace>PrerollsMax.Jellyfin</RootNamespace>
+    <AssemblyName>PrerollsMax.Jellyfin</AssemblyName>
+    <Title>Prerolls Max Intros</Title>
+    <Description>Plays intro videos chosen by Prerolls Max before movies and episodes.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <DefineConstants>$(DefineConstants);JELLYFIN12</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="[10.11.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Model" Version="[10.11.0]" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="[12.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Model" Version="[12.0.0]" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Configuration/configPage.html" />
+  </ItemGroup>
+
+</Project>

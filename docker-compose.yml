@@ -1,0 +1,137 @@
+# Prerolls Max with Docker Compose. Prerolls Max replaces NeXroll: see
+# "Moving from NeXroll" in README.md, and "Running next to NeXroll" at the end
+# of this file if you want to keep NeXroll for a while.
+#
+# This file uses the published image, ghcr.io/modernharp/prerolls-max, so
+# there is nothing to build: edit the intro folder below, then run
+#        docker compose up -d
+#
+# To build the image from this folder instead, replace the "image:" line below
+# with these two lines and run "docker compose up -d --build":
+#        build: .
+#        image: prerollsmax:local
+#
+# Then open http://<this computer's IP>:9393 in a browser.
+#
+# Moving from NeXroll? Prerolls Max replaces it: stop the NeXroll container
+# first (docker stop nexroll), because both use port 9393 and both would
+# manage the same media servers. To bring your NeXroll setup over, add its old
+# data folder as another volume (for example "- /path/to/nexroll/data:/nexroll:ro")
+# and open Settings > Moving from NeXroll. To keep both running on purpose, change the
+# left side of the port mapping instead, for example "9494:9393".
+
+services:
+  prerollsmax:
+    image: ghcr.io/modernharp/prerolls-max:latest
+    container_name: prerollsmax
+    restart: unless-stopped
+
+    ports:
+      - "9393:9393"
+
+    volumes:
+      # Your intro videos. Change the left side to the folder on your computer.
+      # Examples:
+      #   - /mnt/user/media/prerolls:/data/prerolls   (Unraid)
+      #   - /volume1/media/prerolls:/data/prerolls    (Synology)
+      #   - /home/me/prerolls:/data/prerolls          (Linux)
+      # Your media server must see the same folder too. If it sees it under a
+      # different path, set up Folder mapping in Settings, Advanced.
+      - /path/to/your/prerolls:/data/prerolls
+
+      # Prerolls Max's own data: settings, database, logs, thumbnails.
+      - prerollsmax-data:/data
+
+    environment:
+      # Your time zone, so schedules start at the right time.
+      # List: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+      - TZ=${TZ:-America/New_York}
+
+      # The user and group that own your intro folder (run "id" to see yours).
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+
+      # Optional. You can connect Plex and Jellyfin in the web page instead.
+      # How to find a Plex token: https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+      - PMAX_PLEX_URL=${PMAX_PLEX_URL:-}
+      - PMAX_PLEX_TOKEN=${PMAX_PLEX_TOKEN:-}
+      - PMAX_JELLYFIN_URL=${PMAX_JELLYFIN_URL:-}
+      - PMAX_JELLYFIN_API_KEY=${PMAX_JELLYFIN_API_KEY:-}
+
+    # Checks that Prerolls Max is answering.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9393/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    # Lets Prerolls Max reach a media server running on this same computer
+    # at http://host.docker.internal:<port>.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Optional: a reverse proxy label (Traefik example).
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.prerollsmax.rule=Host(`prerolls.example.com`)"
+    #   - "traefik.http.services.prerollsmax.loadbalancer.server.port=9393"
+
+volumes:
+  prerollsmax-data:
+
+# -----------------------------------------------------------------------------
+# Example: Plex in the same file
+# -----------------------------------------------------------------------------
+# services:
+#   plex:
+#     image: plexinc/pms-docker:latest
+#     container_name: plex
+#     network_mode: host
+#     environment:
+#       - PLEX_CLAIM=${PLEX_CLAIM}
+#       - TZ=${TZ:-America/New_York}
+#     volumes:
+#       - plex-config:/config
+#       - /path/to/media:/media
+#       - /path/to/prerolls:/prerolls      # Plex sees the intros at /prerolls
+#
+#   prerollsmax:
+#     build: .
+#     container_name: prerollsmax
+#     ports:
+#       - "9393:9393"
+#     volumes:
+#       - /path/to/prerolls:/data/prerolls # Prerolls Max sees them at /data/prerolls
+#       - prerollsmax-data:/data
+#     environment:
+#       - TZ=${TZ:-America/New_York}
+#
+# volumes:
+#   plex-config:
+#   prerollsmax-data:
+#
+# The two paths differ, so add a folder mapping in Prerolls Max:
+# Settings, Advanced, Folder mapping: /data/prerolls -> /prerolls.
+
+# -----------------------------------------------------------------------------
+# Running next to NeXroll
+# -----------------------------------------------------------------------------
+# Prerolls Max replaces NeXroll, and the simplest move is to stop NeXroll and
+# give Prerolls Max NeXroll's /data folder (it copies nexroll.db on first
+# start; NeXroll's file isn't changed). To keep NeXroll running for a while
+# instead, give Prerolls Max its own container name, host port and data:
+#
+#   prerollsmax:
+#     image: ghcr.io/modernharp/prerolls-max:latest
+#     container_name: prerollsmax        # NeXroll's container keeps its own name
+#     ports:
+#       - "9494:9393"                     # NeXroll keeps 9393 on the host
+#     volumes:
+#       - /path/to/your/prerolls:/data/prerolls
+#       - prerollsmax-data:/data          # not NeXroll's data folder
+#
+# Then open http://<this computer's IP>:9494. Let only one of them manage
+# intros on each media server: in Prerolls Max, Media Servers, switch off
+# "Prerolls Max manages intros on this server" for any server NeXroll still
+# handles (or remove the server from NeXroll).

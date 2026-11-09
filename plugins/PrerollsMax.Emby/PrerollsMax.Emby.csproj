@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Built against Emby's own NuGet packages (MediaBrowser.Server.Core), so the
+    build needs no DLLs copied out of an Emby install and runs anywhere with a
+    .NET SDK. Emby 4.9 and later run on .NET 8.
+    Version: ../Directory.Build.props. Packaging: ../build.sh.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>PrerollsMax.Emby</RootNamespace>
+    <AssemblyName>PrerollsMax.Emby</AssemblyName>
+    <Title>Prerolls Max Intros</Title>
+    <Description>Plays intro videos chosen by Prerolls Max before movies and episodes.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MediaBrowser.Server.Core" Version="[4.9.1.90]" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Configuration/configPage.html" />
+    <EmbeddedResource Include="Configuration/configPage.js" />
+    <EmbeddedResource Include="thumb.png" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,1643 @@
+"""
+NeX-Up: Radarr Integration Module
+Connects to Radarr to fetch upcoming movies and manage trailers
+"""
+
+import os
+import re
+import json
+import asyncio
+import logging
+import subprocess
+import platform
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+from pathlib import Path
+
+import httpx
+
+from backend import trailer_language
+from backend.timeutil import utcnow
+
+logger = logging.getLogger(__name__)
+
+# TMDB API for getting trailer sources
+TMDB_API_KEY = "8d6d91941230817f7571f3524e6d49fc"  # Public API key for trailer lookups
+TMDB_BASE_URL = "https://api.themoviedb.org/3"
+
+class TMDBTrailerFetcher:
+    """Fetches trailer URLs from TMDB with multiple source support"""
+    
+    def __init__(self, tmdb_api_key: str = None):
+        self.api_key = tmdb_api_key or TMDB_API_KEY
+        self.base_url = TMDB_BASE_URL
+        self.tmdb_available = True  # Track if TMDB is working
+    
+    async def get_trailer_sources(self, tmdb_id: int, title: str = None, year: int = None,
+                                  language: str = trailer_language.DEFAULT_LANGUAGE) -> List[Dict[str, Any]]:
+        """
+        Get all trailer sources for a movie from TMDB.
+        Returns list of trailers with source info (YouTube, Vimeo, etc.)
+        Prioritizes sources that don't have bot detection.
+
+        With a language other than English, TMDB is asked for that language's
+        videos as well as English ones, each source carries its `language` and
+        `region` tags and a `language_rank`, and sources in the language sort
+        first. English sends no language parameters, as before.
+        """
+        trailers = []
+        language = trailer_language.normalize_language(language)
+        english = language == trailer_language.DEFAULT_LANGUAGE
+        
+        # TMDB videos (the Apple Trailers lookup that ran first is gone: the site closed)
+        if self.tmdb_available:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.get(
+                        f"{self.base_url}/movie/{tmdb_id}/videos",
+                        params={'api_key': self.api_key, **trailer_language.tmdb_video_params(language)}
+                    )
+                    if response.status_code == 401:
+                        logger.warning("TMDB API key invalid or expired - will use alternative sources")
+                        self.tmdb_available = False
+                    else:
+                        response.raise_for_status()
+                        data = response.json()
+                        
+                        for video in data.get('results', []):
+                            if video.get('type', '').lower() in ['trailer', 'teaser']:
+                                site = video.get('site', '').lower()
+                                key = video.get('key', '')
+                                
+                                tags = {'language': video.get('iso_639_1'), 'region': video.get('iso_3166_1')}
+                                if site == 'youtube' and key:
+                                    trailers.append({
+                                        'source': 'youtube',
+                                        'url': f"https://www.youtube.com/watch?v={key}",
+                                        'key': key,
+                                        'name': video.get('name', 'Trailer'),
+                                        'official': video.get('official', False),
+                                        'size': video.get('size', 1080),
+                                        'priority': 2,  # Lower priority due to bot detection
+                                        **tags,
+                                    })
+                                elif site == 'vimeo' and key:
+                                    trailers.append({
+                                        'source': 'vimeo',
+                                        'url': f"https://vimeo.com/{key}",
+                                        'key': key,
+                                        'name': video.get('name', 'Trailer'),
+                                        'official': video.get('official', False),
+                                        'size': video.get('size', 1080),
+                                        'priority': 1,  # Medium priority
+                                        **tags,
+                                    })
+                    
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401:
+                    logger.warning("TMDB API key invalid or expired - will use alternative sources")
+                    self.tmdb_available = False
+                else:
+                    logger.error(f"Error fetching TMDB trailers for {tmdb_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching TMDB trailers for {tmdb_id}: {e}")
+        
+        for trailer in trailers:
+            trailer['language_rank'] = (0 if english else trailer_language.language_rank(
+                language, trailer.get('language'), trailer.get('region')))
+
+        # Sort by: language, then priority (lower is better), then official, then size
+        trailers.sort(key=lambda x: (
+            x['language_rank'],
+            x.get('priority', 99),
+            not x['official'],
+            -(x['size'] or 0)
+        ))
+        
+        return trailers
+
+
+class RadarrConnector:
+    """Handles all Radarr API interactions"""
+    
+    def __init__(self, url: str, api_key: str, timeout: int = 30):
+        self.base_url = url.rstrip('/')
+        self.api_key = api_key
+        self.timeout = timeout
+        self.headers = {
+            'X-Api-Key': api_key,
+            'Content-Type': 'application/json'
+        }
+    
+    def _select_release_date(self, digital_release: str, physical_release: str, in_cinemas: str, preference: str = 'digital_first') -> tuple:
+        """
+        Select the appropriate release date based on user preference.
+        Returns (release_date, release_type) tuple.
+        
+        Preferences:
+        - 'digital_first': Digital > Physical > Theatrical (default)
+        - 'digital_only': Only use digital date
+        - 'physical_first': Physical > Digital > Theatrical  
+        - 'theatrical': Theatrical > Digital > Physical
+        """
+        def parse_date(date_str):
+            if not date_str:
+                return None
+            try:
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00')).date()
+            except:
+                return None
+        
+        digital_date = parse_date(digital_release)
+        physical_date = parse_date(physical_release)
+        theatrical_date = parse_date(in_cinemas)
+        
+        if preference == 'digital_only':
+            # Only return digital date, skip movie if not available
+            if digital_date:
+                return digital_date, 'digital'
+            return None, None
+        
+        elif preference == 'physical_first':
+            # Physical > Digital > Theatrical
+            if physical_date:
+                return physical_date, 'physical'
+            if digital_date:
+                return digital_date, 'digital'
+            if theatrical_date:
+                return theatrical_date, 'theatrical'
+            return None, None
+        
+        elif preference == 'theatrical':
+            # Theatrical > Digital > Physical
+            if theatrical_date:
+                return theatrical_date, 'theatrical'
+            if digital_date:
+                return digital_date, 'digital'
+            if physical_date:
+                return physical_date, 'physical'
+            return None, None
+        
+        else:  # 'digital_first' (default)
+            # Digital > Physical > Theatrical
+            if digital_date:
+                return digital_date, 'digital'
+            if physical_date:
+                return physical_date, 'physical'
+            if theatrical_date:
+                return theatrical_date, 'theatrical'
+            return None, None
+    
+    async def test_connection(self) -> Dict[str, Any]:
+        """Check that this is Radarr and the API key works (see arr_check)."""
+        from backend import arr_check
+        return await arr_check.test_connection("Radarr", self.base_url, self.headers, self.timeout)
+
+    async def get_upcoming_movies(self, days_ahead: int = 90, include_unmonitored: bool = False, release_date_preference: str = 'digital_first') -> List[Dict[str, Any]]:
+        """
+        Fetch movies from Radarr that are:
+        - Announced/In Cinemas (not yet released digitally)
+        - Have a release date within the look-ahead window
+        - Not yet downloaded/available
+        - Optionally include unmonitored movies
+        
+        release_date_preference options:
+        - 'digital_first': Digital > Physical > Theatrical (default, shows when you can actually watch it)
+        - 'digital_only': Only include movies with a digital release date
+        - 'physical_first': Physical > Digital > Theatrical
+        - 'theatrical': Theatrical > Digital > Physical (for theater fans)
+        """
+        try:
+            all_movies = await self.fetch_all_movies()
+        except Exception as e:
+            logger.error(f"Error fetching upcoming movies from Radarr: {e}")
+            return []
+        return self.upcoming_from_raw(all_movies, days_ahead, include_unmonitored, release_date_preference)
+
+    def upcoming_from_raw(self, all_movies: List[Dict[str, Any]], days_ahead: int = 90, include_unmonitored: bool = False, release_date_preference: str = 'digital_first') -> List[Dict[str, Any]]:
+        """get_upcoming_movies on an already-fetched movie list. Unlike
+        parse_upcoming_from_raw it keeps downloaded movies, for "Available Now!"."""
+        upcoming = []
+        today = datetime.now().date()
+        cutoff_date = today + timedelta(days=days_ahead)
+        # Allow movies up to 7 days past their release date (recently released, not downloaded yet)
+        past_cutoff = today - timedelta(days=7)
+
+        for movie in all_movies:
+            # Skip unmonitored movies (unless include_unmonitored is True)
+            if not include_unmonitored and not movie.get('monitored', False):
+                continue
+            
+            # Check status - we want movies that are monitored but not available
+            status = movie.get('status', '').lower()
+            if status not in ['announced', 'incinemas', 'released']:
+                continue
+            
+            has_file = movie.get('hasFile', False)
+            
+            # Filter out quality upgrades / re-releases of old movies
+            # If the movie year is more than 2 years before current year, it's likely
+            # a re-release (e.g., 4K upgrade) not genuinely new content
+            movie_year = movie.get('year', 0) or 0
+            current_year = today.year
+            if movie_year and movie_year < current_year - 1:
+                continue
+            
+            # Get all release dates
+            digital_release = movie.get('digitalRelease')
+            physical_release = movie.get('physicalRelease')
+            in_cinemas = movie.get('inCinemas')
+            
+            # Determine the release date based on preference
+            release_date = None
+            release_type = None
+            
+            release_date, release_type = self._select_release_date(
+                digital_release, physical_release, in_cinemas, release_date_preference
+            )
+            
+            # Skip if no release date
+            if not release_date:
+                continue
+                
+            # Skip if too far in the future
+            if release_date > cutoff_date:
+                continue
+                
+            # Skip if too far in the past (more than 7 days ago)
+            # For downloaded movies (hasFile), still include them so they can show "Available Now!"
+            if release_date < past_cutoff and not has_file:
+                continue
+            
+            # For downloaded movies, only include if released within 30 days (generous window for "Available Now!" display)
+            if has_file and release_date < today - timedelta(days=30):
+                continue
+            
+            # Get trailer info from YouTube
+            trailer_url = None
+            if movie.get('youTubeTrailerId'):
+                trailer_url = f"https://www.youtube.com/watch?v={movie['youTubeTrailerId']}"
+            
+            upcoming.append({
+                'radarr_id': movie.get('id'),
+                'tmdb_id': movie.get('tmdbId'),
+                'imdb_id': movie.get('imdbId'),
+                'title': movie.get('title', 'Unknown'),
+                'year': movie.get('year'),
+                'certification': movie.get('certification'),
+                'overview': movie.get('overview', ''),
+                'status': status,
+                'release_date': release_date.isoformat() if release_date else None,
+                'release_type': release_type,
+                'days_until_release': (release_date - today).days if release_date else None,
+                'trailer_url': trailer_url,
+                'poster_url': self._get_poster_url(movie),
+                'fanart_url': self._get_fanart_url(movie),
+                'runtime': movie.get('runtime', 0),
+                'genres': movie.get('genres', []),
+                'ratings': movie.get('ratings', {}),
+                'has_file': movie.get('hasFile', False),
+                'monitored': movie.get('monitored', False),
+                'radarr_server': movie.get('nexrollServer'),  # set when read through radarr_servers
+            })
+        
+        # Sort by release date (soonest first)
+        upcoming.sort(key=lambda x: x['release_date'] or '9999-99-99')
+        
+        return upcoming
+    
+    async def get_all_movies_raw(self) -> List[Dict[str, Any]]:
+        """
+        Fetch ALL movies from Radarr in a single API call.
+        Returns raw movie data including hasFile status.
+        Used for batch checking download status without multiple API calls.
+        An unreachable Radarr gives an empty list; use fetch_all_movies to
+        tell the two apart.
+        """
+        try:
+            return await self.fetch_all_movies()
+        except Exception as e:
+            logger.error(f"Error fetching all movies from Radarr: {e}")
+            return []
+
+    async def fetch_all_movies(self) -> List[Dict[str, Any]]:
+        """Every movie in Radarr, raising when Radarr can't be read."""
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.get(
+                f"{self.base_url}/api/v3/movie",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            movies = response.json()
+        if not isinstance(movies, list):
+            raise ValueError("Radarr returned an unexpected movie list")
+        return movies
+
+    async def fetch_tags(self) -> List[Dict[str, Any]]:
+        """Radarr's tags as [{"id", "label"}], raising when they can't be read."""
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            response = await client.get(f"{self.base_url}/api/v3/tag", headers=self.headers)
+            response.raise_for_status()
+            return [{"id": t.get("id"), "label": t.get("label")} for t in response.json() if t.get("id") is not None]
+    
+    def parse_upcoming_from_raw(self, all_movies: List[Dict[str, Any]], days_ahead: int = 90, include_unmonitored: bool = False, release_date_preference: str = 'digital_first') -> List[Dict[str, Any]]:
+        """
+        Parse upcoming movies from raw Radarr movie data.
+        This avoids a second API call when we already have all movie data.
+        Optionally includes unmonitored movies.
+        
+        release_date_preference options:
+        - 'digital_first': Digital > Physical > Theatrical (default)
+        - 'digital_only': Only include movies with a digital release date
+        - 'physical_first': Physical > Digital > Theatrical
+        - 'theatrical': Theatrical > Digital > Physical
+        """
+        upcoming = []
+        today = datetime.now().date()
+        cutoff_date = today + timedelta(days=days_ahead)
+        past_cutoff = today - timedelta(days=7)
+        
+        for movie in all_movies:
+            # Skip if already downloaded/has file
+            if movie.get('hasFile', False):
+                continue
+            
+            # Skip unmonitored movies (unless include_unmonitored is True)
+            if not include_unmonitored and not movie.get('monitored', False):
+                continue
+            
+            # Check status
+            status = movie.get('status', '').lower()
+            if status not in ['announced', 'incinemas', 'released']:
+                continue
+            
+            # Get all release dates
+            digital_release = movie.get('digitalRelease')
+            physical_release = movie.get('physicalRelease')
+            in_cinemas = movie.get('inCinemas')
+            
+            # Determine the release date based on preference
+            release_date, release_type = self._select_release_date(
+                digital_release, physical_release, in_cinemas, release_date_preference
+            )
+            
+            if not release_date:
+                continue
+            if release_date > cutoff_date:
+                continue
+            if release_date < past_cutoff:
+                continue
+            
+            # Get trailer URL from Radarr - check multiple possible fields
+            trailer_url = None
+            youtube_trailer_id = movie.get('youTubeTrailerId')
+            
+            if youtube_trailer_id:
+                trailer_url = f"https://www.youtube.com/watch?v={youtube_trailer_id}"
+                logger.debug(f"Found YouTube trailer for {movie.get('title')}: {youtube_trailer_id}")
+            else:
+                # Check if there's trailer info in movie file or other fields
+                # Radarr stores this in the root level
+                logger.debug(f"No youTubeTrailerId for {movie.get('title')} (TMDB: {movie.get('tmdbId')})")
+            
+            upcoming.append({
+                'radarr_id': movie.get('id'),
+                'tmdb_id': movie.get('tmdbId'),
+                'imdb_id': movie.get('imdbId'),
+                'title': movie.get('title', 'Unknown'),
+                'year': movie.get('year'),
+                'certification': movie.get('certification'),
+                'overview': movie.get('overview', ''),
+                'status': status,
+                'release_date': release_date.isoformat() if release_date else None,
+                'release_type': release_type,
+                'days_until_release': (release_date - today).days if release_date else None,
+                'trailer_url': trailer_url,
+                'youtube_trailer_id': youtube_trailer_id,  # Store the raw ID too
+                'poster_url': self._get_poster_url(movie),
+                'fanart_url': self._get_fanart_url(movie),
+                'runtime': movie.get('runtime', 0),
+                'genres': movie.get('genres', []),
+                'ratings': movie.get('ratings', {}),
+                'has_file': movie.get('hasFile', False),
+                'monitored': movie.get('monitored', False),
+                'radarr_server': movie.get('nexrollServer'),  # set when read through radarr_servers
+            })
+        
+        upcoming.sort(key=lambda x: x['release_date'] or '9999-99-99')
+        return upcoming
+
+    async def get_movie_by_id(self, radarr_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a specific movie by Radarr ID"""
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                response = await client.get(
+                    f"{self.base_url}/api/v3/movie/{radarr_id}",
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Error fetching movie {radarr_id}: {e}")
+            return None
+    
+    async def check_movie_downloaded(self, radarr_id: int) -> bool:
+        """Check if a movie has been downloaded"""
+        movie = await self.get_movie_by_id(radarr_id)
+        if movie:
+            return movie.get('hasFile', False)
+        return False
+    
+    def _get_poster_url(self, movie: Dict) -> Optional[str]:
+        """Extract poster URL from movie images"""
+        images = movie.get('images', [])
+        for img in images:
+            if img.get('coverType') == 'poster':
+                url = img.get('remoteUrl') or img.get('url')
+                if url:
+                    return url
+        return None
+    
+    def _get_fanart_url(self, movie: Dict) -> Optional[str]:
+        """Extract fanart URL from movie images"""
+        images = movie.get('images', [])
+        for img in images:
+            if img.get('coverType') == 'fanart':
+                url = img.get('remoteUrl') or img.get('url')
+                if url:
+                    return url
+        return None
+
+
+def classify_ytdlp_error(msg: str) -> dict:
+    """Map a yt-dlp error string to a stable category + user-facing guidance.
+
+    Distinguishes the cases the old code conflated: bot/auth wall (cookies
+    stale or missing) vs a specific video being unavailable (private, removed,
+    age/region-locked) vs everything else. Lets the UI stop telling users to
+    re-export cookies when the cookies are fine and only that video is bad.
+    """
+    m = (msg or '').lower()
+    if any(s in m for s in ["sign in to confirm", "who's watching", 'not a bot',
+                            'confirm you', 'sign in to view']):
+        return {'category': 'auth', 'reason': "YouTube asked this server to prove it isn't a robot, so it wouldn't hand over the video. Add YouTube cookies or start the helper under If downloads fail."}
+    if any(s in m for s in ['private video', 'video unavailable', 'removed by the uploader',
+                            'no longer available', 'this video is not available', 'members-only',
+                            'account associated with this video has been terminated']):
+        return {'category': 'video_unavailable', 'reason': "That video is private, removed, members-only or blocked in your country. It's the video, not your setup."}
+    if 'age' in m and ('restrict' in m or 'confirm' in m):
+        return {'category': 'age_restricted', 'reason': "That video is age-restricted, so YouTube only shows it to a signed-in account. Add YouTube cookies under If downloads fail."}
+    if 'http error 429' in m or 'too many requests' in m:
+        return {'category': 'rate_limited', 'reason': "YouTube has had too many requests from this network for now. Wait an hour or so and try again."}
+    if 'unable to download video data' in m and '403' in m:
+        # Extraction and the PO token both succeeded — the media URL itself was
+        # revoked partway through the transfer. This is YouTube's SABR rollout
+        # (yt-dlp #12482), not a cookie or token problem, and no amount of
+        # re-authenticating fixes it; a newer yt-dlp is what carries the fix.
+        return {'category': 'sabr_blocked', 'reason': 'YouTube revoked the media URL mid-download (SABR streaming). Not an authentication problem; needs a newer yt-dlp.'}
+    if 'forcing sabr streaming' in m:
+        return {'category': 'sabr_blocked', 'reason': 'YouTube is forcing SABR streaming for this client, so the usual download URLs are withheld.'}
+    if 'requested format is not available' in m or 'no video formats found' in m:
+        # Extraction + auth SUCCEEDED — yt-dlp reached the video and read its
+        # format list; it only failed to match a format string. For a probe
+        # (which downloads nothing) this proves sign-in works. The real
+        # downloader tries many format/player-client combos, so this is not a
+        # download blocker either.
+        return {'category': 'reachable', 'reason': 'Reached the video and authenticated (format selection is not relevant to a sign-in test).'}
+    return {'category': 'other', 'reason': (msg or 'Unknown error')[:300]}
+
+
+def search_youtube_trailers(query: str, limit: int = 3, search_pool: int = 10) -> list:
+    """Search YouTube for trailer candidates (used when the Radarr/TMDB-provided
+    trailer is unavailable). Returns up to `limit` lightweight dicts the UI can
+    show for preview + user-chosen download:
+        {id, title, channel, duration, url, thumbnail, view_count}
+
+    Uses a flat search (metadata only, no per-video extraction or download), so
+    it's fast and needs no PO token. Results are ranked toward genuine trailers
+    (title contains "trailer"/"official", sensible length) but kept in search
+    relevance order as a tiebreaker.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        logger.warning("yt_dlp not available for trailer search")
+        return []
+
+    opts = {
+        'quiet': True, 'no_warnings': True, 'extract_flat': True,
+        'skip_download': True, 'noplaylist': True, 'socket_timeout': 30,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch{search_pool}:{query}", download=False)
+        entries = (info or {}).get('entries') or []
+    except Exception as e:
+        logger.warning(f"YouTube trailer search failed for '{query}': {e}")
+        return []
+
+    seen = set()
+    scored = []
+    for idx, e in enumerate(entries):
+        if not e:
+            continue
+        vid = e.get('id')
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        title = e.get('title') or ''
+        dur = e.get('duration') or 0
+        # Skip obvious non-trailers (full movies, long reviews/reactions).
+        if dur and dur > 600:
+            continue
+        tl = title.lower()
+        score = 0
+        if 'trailer' in tl:
+            score += 3
+        if 'official' in tl:
+            score += 2
+        if 'teaser' in tl:
+            score += 1
+        if dur and 20 <= dur <= 240:
+            score += 2
+        scored.append((score, idx, {
+            'id': vid,
+            'title': title,
+            'channel': e.get('channel') or e.get('uploader') or '',
+            'duration': dur,
+            'url': f'https://www.youtube.com/watch?v={vid}',
+            'thumbnail': f'https://i.ytimg.com/vi/{vid}/hqdefault.jpg',
+            'view_count': e.get('view_count'),
+        }))
+
+    scored.sort(key=lambda t: (-t[0], t[1]))  # score desc, then search order
+    return [item for _, _, item in scored[:limit]]
+
+
+def probe_youtube(url: str, cookies_file=None, cookie_browser=None, timeout: int = 45) -> dict:
+    """Probe a single YouTube URL via the yt_dlp PYTHON MODULE (no CLI binary,
+    which doesn't exist in Docker/PyInstaller builds). Returns
+    {ok, title?, category?, reason?}. Used by the test/diagnostic endpoint so
+    it exercises the same code path production downloads use.
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        return {'ok': False, 'category': 'no_ytdlp', 'reason': 'yt-dlp module not available'}
+
+    opts = {
+        'quiet': True, 'no_warnings': True, 'noplaylist': True,
+        'skip_download': True, 'socket_timeout': timeout,
+        'no_check_certificate': True,
+        # This is a sign-in/reachability probe, not a download. Accept any
+        # format so format-string mismatches never fail it; we never fetch
+        # media anyway (download=False).
+        'format': 'best/bestvideo*+bestaudio/bestvideo*/worst',
+        'ignore_no_formats_error': True,
+    }
+    if cookies_file and Path(cookies_file).exists():
+        opts['cookiefile'] = str(cookies_file)
+    elif cookie_browser:
+        opts['cookiesfrombrowser'] = _parse_cookies_from_browser(cookie_browser)
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        # With ignore_no_formats_error, YouTube's "confirm you're not a bot"
+        # wall comes back as a title and no formats: the page loaded but the
+        # video didn't, which is exactly what makes real downloads fail.
+        if not (info or {}).get('formats') and not (info or {}).get('url'):
+            return {'ok': False, **classify_ytdlp_error("sign in to confirm you're not a bot")}
+        return {'ok': True, 'title': info.get('title'), 'duration': info.get('duration')}
+    except yt_dlp.utils.DownloadError as e:
+        c = classify_ytdlp_error(str(e))
+        # "reachable" means extraction + auth worked (only format selection
+        # failed) — that's a PASS for a sign-in test.
+        if c.get('category') == 'reachable':
+            return {'ok': True, 'title': None, 'reason': c['reason']}
+        return {'ok': False, **c}
+    except Exception as e:
+        c = classify_ytdlp_error(str(e))
+        if c.get('category') == 'reachable':
+            return {'ok': True, 'title': None, 'reason': c['reason']}
+        return {'ok': False, **c}
+
+
+def _parse_cookies_from_browser(spec: str):
+    """Turn a yt-dlp CLI --cookies-from-browser spec into the Python-API tuple.
+
+    CLI form:  BROWSER[+KEYRING][:PROFILE][::CONTAINER]   e.g. "edge:+keyring"
+    API form:  (browser, profile, keyring, container)     e.g. ("edge", None, "+keyring", None)
+
+    The previous code passed the raw string as a 1-tuple, which yt-dlp rejected,
+    so every browser-cookie strategy silently failed.
+    """
+    browser = spec
+    profile = None
+    keyring = None
+    container = None
+    # KEYRING is attached to the browser with '+': "edge+gnomekeyring" or "edge:+keyring"
+    if '::' in browser:
+        browser, container = browser.split('::', 1)
+    if ':' in browser:
+        browser, profile = browser.split(':', 1)
+    if profile and profile.startswith('+'):
+        keyring = profile[1:] or None
+        profile = None
+    if '+' in browser:
+        browser, keyring = browser.split('+', 1)
+    return (browser.strip().lower(), profile or None, keyring or None, container or None)
+
+
+def _format_duration(seconds) -> str:
+    """151 -> '2:31', for messages that quote a trailer length."""
+    seconds = int(round(float(seconds or 0)))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+class TrailerDownloader:
+    """Handles downloading trailers using yt-dlp with TMDB source discovery and browser cookie support"""
+    
+    def __init__(self, storage_path: str, quality: str = '1080', use_cookies: bool = True, cookie_browser: str = 'auto', tmdb_api_key: str = None, max_duration: int = 0,
+                 language: str = trailer_language.DEFAULT_LANGUAGE, language_fallback: str = trailer_language.DEFAULT_FALLBACK,
+                 cookies_dir: Optional[str] = None):
+        self.base_storage_path = Path(storage_path)
+        self.base_storage_path.mkdir(parents=True, exist_ok=True)
+        # "Upload cookies.txt" saves into the trailer folder itself. Library
+        # trailers download into a subfolder, so they pass that folder here.
+        self.cookies_file = Path(cookies_dir or storage_path) / 'youtube_cookies.txt'
+        
+        # Create subdirectories for movies and tv
+        self.movies_path = self.base_storage_path / 'movies'
+        self.tv_path = self.base_storage_path / 'tv'
+        self.movies_path.mkdir(parents=True, exist_ok=True)
+        self.tv_path.mkdir(parents=True, exist_ok=True)
+        
+        # Default storage path (for backward compatibility)
+        self.storage_path = self.base_storage_path
+        
+        self.quality = quality
+        self.max_duration = max_duration  # Max trailer duration in seconds (0 = no limit)
+        # NeX-Up > Settings > Trailer language, and what to do without one.
+        self.language = trailer_language.normalize_language(language)
+        self.language_fallback = trailer_language.normalize_fallback(language_fallback)
+        self.use_cookies = use_cookies
+        self.cookie_browser = cookie_browser  # 'chrome', 'firefox', 'edge', 'brave', 'auto'
+        self.tmdb = TMDBTrailerFetcher(tmdb_api_key=tmdb_api_key)
+        
+        # Quality format mapping.
+        # PREFER H.264 (avc1) video + AAC (mp4a) audio first. Plex prerolls must
+        # DIRECT-PLAY (Plex never transcodes a preroll), and yt-dlp's default
+        # "bestvideo" at 1080p is usually VP9 — which many Plex clients can't
+        # direct-play, so VP9 trailers get silently skipped in a sequence while
+        # the H.264 dynamic/category prerolls play. Each entry then falls back to
+        # the old codec-agnostic selection so a video that only offers VP9/AV1
+        # still downloads (it just may not direct-play on every client).
+        self.quality_formats = {
+            '720':  'bestvideo[vcodec^=avc1][height<=720]+bestaudio[acodec^=mp4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best/bestvideo+bestaudio/b',
+            '1080': 'bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best/bestvideo+bestaudio/b',
+            '4k':   'bestvideo[vcodec^=avc1][height<=2160]+bestaudio[acodec^=mp4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]/best/bestvideo+bestaudio/b',
+            'best': 'bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo+bestaudio/best/b'
+        }
+        
+        # Detect available browser for cookies
+        self._detected_browser = None
+        if self.use_cookies and self.cookie_browser == 'auto':
+            self._detected_browser = self._detect_browser()
+    
+    def _detect_browser(self) -> Optional[str]:
+        """Detect which browser is available for cookie extraction"""
+        # Order of preference - browsers most likely to have YouTube logged in
+        browsers = ['chrome', 'firefox', 'edge', 'brave', 'chromium', 'opera', 'vivaldi']
+        
+        for browser in browsers:
+            # Check if browser profile exists
+            if platform.system() == 'Windows':
+                browser_paths = {
+                    'chrome': Path.home() / 'AppData/Local/Google/Chrome/User Data',
+                    'firefox': Path.home() / 'AppData/Roaming/Mozilla/Firefox/Profiles',
+                    'edge': Path.home() / 'AppData/Local/Microsoft/Edge/User Data',
+                    'brave': Path.home() / 'AppData/Local/BraveSoftware/Brave-Browser/User Data',
+                    'chromium': Path.home() / 'AppData/Local/Chromium/User Data',
+                    'opera': Path.home() / 'AppData/Roaming/Opera Software/Opera Stable',
+                    'vivaldi': Path.home() / 'AppData/Local/Vivaldi/User Data',
+                }
+            elif platform.system() == 'Darwin':  # macOS
+                browser_paths = {
+                    'chrome': Path.home() / 'Library/Application Support/Google/Chrome',
+                    'firefox': Path.home() / 'Library/Application Support/Firefox/Profiles',
+                    'edge': Path.home() / 'Library/Application Support/Microsoft Edge',
+                    'brave': Path.home() / 'Library/Application Support/BraveSoftware/Brave-Browser',
+                    'safari': Path.home() / 'Library/Safari',
+                }
+            else:  # Linux
+                browser_paths = {
+                    'chrome': Path.home() / '.config/google-chrome',
+                    'firefox': Path.home() / '.mozilla/firefox',
+                    'chromium': Path.home() / '.config/chromium',
+                    'brave': Path.home() / '.config/BraveSoftware/Brave-Browser',
+                }
+            
+            if browser in browser_paths and browser_paths[browser].exists():
+                logger.info(f"Detected browser for cookies: {browser}")
+                return browser
+        
+        logger.debug("No browser detected for cookie extraction")
+        return None
+    
+    def get_cookie_browser(self) -> Optional[str]:
+        """Get the browser to use for cookies"""
+        if not self.use_cookies:
+            return None
+        if self.cookie_browser != 'auto':
+            return self.cookie_browser
+        return self._detected_browser
+    
+    def get_format_string(self) -> str:
+        """Get yt-dlp format string based on quality setting"""
+        return self.quality_formats.get(self.quality, self.quality_formats['1080'])
+    
+    def sanitize_filename(self, title: str) -> str:
+        """Create a safe filename from movie title"""
+        # Remove invalid characters
+        safe = re.sub(r'[<>:"/\\|?*]', '', title)
+        # Replace spaces with underscores
+        safe = safe.replace(' ', '_')
+        # Limit length
+        return safe[:100]
+    
+    async def _download_direct_url(
+        self,
+        url: str,
+        output_path: Path,
+        title: str
+    ) -> Optional[Dict[str, Any]]:
+        """Download a direct video URL without yt-dlp"""
+        try:
+            async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+                logger.info(f"Direct downloading: {title} from {url[:50]}...")
+                
+                # Stream the download for large files
+                async with client.stream('GET', url) as response:
+                    response.raise_for_status()
+                    
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    
+                    with open(output_path, 'wb') as f:
+                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0 and downloaded % (1024 * 1024) == 0:
+                                percent = (downloaded / total_size) * 100
+                                logger.debug(f"Download progress: {percent:.1f}%")
+                
+                file_size = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"Direct download complete: {output_path} ({file_size:.1f} MB)")
+                
+                # Convert MOV to MP4 if needed (for better compatibility)
+                if output_path.suffix.lower() == '.mov':
+                    mp4_path = output_path.with_suffix('.mp4')
+                    try:
+                        cmd = [
+                            'ffmpeg', '-y', '-i', str(output_path),
+                            '-c:v', 'copy', '-c:a', 'aac',
+                            str(mp4_path)
+                        ]
+                        # Run in background with hidden window on Windows
+                        creationflags = 0
+                        if platform.system() == 'Windows':
+                            creationflags = subprocess.CREATE_NO_WINDOW
+                        
+                        process = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            creationflags=creationflags
+                        )
+                        await process.wait()
+                        
+                        if process.returncode == 0 and mp4_path.exists():
+                            output_path.unlink()  # Remove original MOV
+                            output_path = mp4_path
+                            logger.info(f"Converted to MP4: {output_path}")
+                        else:
+                            logger.warning("FFmpeg conversion failed, keeping original MOV")
+                    except Exception as conv_e:
+                        logger.warning(f"Could not convert to MP4: {conv_e}")
+                
+                return {
+                    'path': str(output_path),
+                    'size_mb': round(file_size, 2),
+                    'duration': 0,  # Would need ffprobe to get duration
+                    'title': title,
+                    'resolution': '1080p'
+                }
+        except Exception as e:
+            logger.error(f"Direct download failed: {e}")
+            return None
+    
+    async def download_trailer(
+        self, 
+        url: str,
+        title: str,
+        tmdb_id: int = None,
+        year: int = None,
+        tvdb_id: int = None,
+        only_provided_url: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Download a trailer for a movie or TV show.
+        PRIORITY ORDER:
+        1. Radarr-provided YouTube URL (from youTubeTrailerId) - most reliable!
+        2. TMDB sources without bot detection (Vimeo)
+        3. TMDB YouTube sources
+        4. Other sources
+
+        only_provided_url=True downloads EXACTLY `url` with no TMDB fallback.
+        Used when the user explicitly chose an alternate trailer in the picker, so
+        a failure is reported honestly instead of silently substituting a
+        different trailer.
+
+        For TV shows, tmdb_id may be None - use tvdb_id instead for filename.
+        Movies are stored in /movies subdirectory, TV shows in /tv subdirectory.
+        """
+        try:
+            safe_title = self.sanitize_filename(title)
+            
+            # Determine output path based on media type (movies vs TV)
+            if tvdb_id:
+                # TV show - use tv subdirectory
+                output_dir = self.tv_path
+                output_template = str(output_dir / f"{safe_title}_tvdb{tvdb_id}_trailer.%(ext)s")
+                logger.info(f"Finding trailer for TV show: {title} (TVDB ID: {tvdb_id}) -> tv/")
+            elif tmdb_id:
+                # Movie - use movies subdirectory
+                output_dir = self.movies_path
+                output_template = str(output_dir / f"{safe_title}_{tmdb_id}_trailer.%(ext)s")
+                logger.info(f"Finding trailer sources for movie: {title} (TMDB ID: {tmdb_id}) -> movies/")
+            else:
+                # Unknown type - use base storage path
+                output_dir = self.base_storage_path
+                output_template = str(output_dir / f"{safe_title}_trailer.%(ext)s")
+                logger.info(f"Finding trailer for: {title} -> base path")
+            
+            # Build trailer sources list with proper priority
+            trailer_sources = []
+            
+            # PRIORITY 1: If we have a Radarr-provided URL, add it FIRST with highest priority
+            # This is the same trailer you see when clicking "Trailer" in Radarr's external links
+            if url:
+                logger.info(f"Using Radarr-provided trailer URL: {url}")
+                trailer_sources.append({
+                    'source': 'youtube',
+                    'url': url,
+                    'name': 'Radarr Trailer (Primary)',
+                    'priority': -1  # Highest priority (lowest number)
+                })
+            
+            # PRIORITY 2+: Get additional sources from TMDB (Vimeo, other YouTube)
+            # Only if we have a TMDB ID (movies, not TV shows). Skipped when the
+            # caller asked to use exactly the provided URL (user-chosen alternate),
+            # so a failure isn't masked by quietly grabbing a different trailer.
+            if tmdb_id and not only_provided_url:
+                tmdb_sources = await self.tmdb.get_trailer_sources(
+                    tmdb_id, title=title, year=year, language=self.language)
+                
+                # Add TMDB sources, but avoid duplicates with the Radarr URL
+                for source in tmdb_sources:
+                    # Skip if this is the same YouTube video as Radarr provided
+                    same_as_radarr = bool(url and source.get('url') == url)
+                    # Also check by video ID
+                    if url and not same_as_radarr and source.get('source') == 'youtube':
+                        radarr_vid_id = url.split('v=')[-1].split('&')[0] if 'v=' in url else None
+                        source_vid_id = source.get('key') or (source.get('url', '').split('v=')[-1].split('&')[0] if 'v=' in source.get('url', '') else None)
+                        same_as_radarr = bool(radarr_vid_id and source_vid_id and radarr_vid_id == source_vid_id)
+                    if same_as_radarr:
+                        # TMDB knows the Radarr trailer's language; keep that on it.
+                        for key in ('language', 'region', 'language_rank'):
+                            if key in source:
+                                trailer_sources[0][key] = source[key]
+                        continue
+                    trailer_sources.append(source)
+
+            if not only_provided_url and not trailer_language.is_english(self.language):
+                trailer_sources = self._order_by_language(trailer_sources)
+                if not trailer_sources and tmdb_id and not self.tmdb.tmdb_available:
+                    # Not "no trailer in that language": Prerolls Max couldn't ask.
+                    message = (
+                        f"TMDB_KEY_REJECTED: TMDB rejected the API key, so Prerolls Max can't look up "
+                        f"{trailer_language.label(self.language)} trailers. Add your own free TMDB API key "
+                        f"under Your own TMDB key on the Movie trailers page, then press Get trailers now again.")
+                    logger.warning(f"{title}: {message}")
+                    return {'error': 'TMDB_KEY_REJECTED', 'message': message}
+                if not trailer_sources:
+                    message = (
+                        f"NO_LANGUAGE_MATCH: TMDB lists no {trailer_language.label(self.language)} trailer for "
+                        f"this movie yet, and Prerolls Max is set to skip movies without one. It is checked again "
+                        f"on the next sync.")
+                    logger.info(f"{title}: {message}")
+                    return {'error': 'NO_LANGUAGE_MATCH', 'message': message}
+            
+            if not trailer_sources:
+                logger.warning(f"No trailer sources found for {title}")
+                return None
+            
+            # Sort by priority (lower = better); a chosen language comes first.
+            trailer_sources.sort(key=lambda x: (x.get('language_rank', 0), x.get('priority', 99)))
+            
+            logger.info(f"Found {len(trailer_sources)} trailer sources for {title}")
+            for i, src in enumerate(trailer_sources[:3]):  # Log first 3
+                logger.info(f"  Source {i+1}: {src.get('name', src['source'])} ({src['source']})")
+            
+            # Run yt-dlp with hidden window on Windows
+            import sys
+            creationflags = 0
+            if sys.platform == 'win32':
+                creationflags = subprocess.CREATE_NO_WINDOW
+            
+            last_error = None
+            # Set when a source's trailer exceeded max_duration. It wins over any
+            # later source's error: the trailer exists and only the user's limit
+            # stopped it, which is the one thing they can act on.
+            too_long_error = None
+            cookie_browser = self.get_cookie_browser()
+            
+            # Debug: Log cookie file status at download time
+            debug_cookies_file = self.cookies_file
+            logger.info(f"TrailerDownloader: base_storage_path={self.base_storage_path}")
+            logger.info(f"TrailerDownloader: cookies_file={debug_cookies_file} (exists={debug_cookies_file.exists()})")
+            
+            # Try each trailer source
+            for source in trailer_sources:
+                source_url = source['url']
+                source_name = source.get('name', source['source'])
+                source_type = source['source']
+                
+                logger.info(f"Trying {source_type} source: {source_name}")
+                
+                # Different strategies based on source
+                if source_type == 'vimeo':
+                    # Vimeo usually works without cookies
+                    result = await self._download_with_ytdlp(
+                        source_url, output_template, title, tmdb_id,
+                        [], creationflags, output_dir
+                    )
+                    if isinstance(result, dict) and result.get('path'):
+                        return self._with_source(result, source)
+                    if isinstance(result, dict) and result.get('error') == 'too_long':
+                        too_long_error = result['message']
+                    last_error = f"Vimeo download failed for {source_name}"
+                    
+                elif source_type == 'youtube':
+                    # Modern, lean YouTube strategy (2026). The heavy lifting is
+                    # done by the bgutil PO-token provider (backend/nexup_potoken.py)
+                    # and its yt-dlp plugin, which auto-attach a Proof-of-Origin
+                    # token so the default / tv / web_safari clients work WITHOUT
+                    # cookies and get past "Sign in to confirm you're not a bot".
+                    #
+                    # We make sure the token server is up, then try a SHORT ordered
+                    # list of clients that actually work today — instead of the old
+                    # ~30-strategy scattergun full of clients YouTube has since
+                    # killed (android/ios/mediaconnect/web_creator/…), which only
+                    # burned time and rate limit before failing.
+                    try:
+                        from backend import nexup_potoken
+                        _mgr = nexup_potoken.get_manager()
+                        if _mgr is not None:
+                            _ps = _mgr.ensure_running()
+                            if _ps.get('usable'):
+                                logger.info("PO-token provider active — cookieless YouTube downloads enabled")
+                            else:
+                                logger.info("PO-token provider not usable; falling back to cookies/clients")
+                    except Exception as _pe:
+                        logger.debug(f"PO-token provider check failed: {_pe}")
+
+                    cookies_file = self.cookies_file
+                    oauth_file = self.base_storage_path / 'youtube_oauth.json'
+                    base_flags = ['--force-ipv4', '--geo-bypass']
+
+                    youtube_strategies = []
+                    # 1. Default clients, cookieless. With a PO token this is the
+                    #    most reliable path for public trailers and avoids
+                    #    rate-limiting / flagging a signed-in account.
+                    youtube_strategies.append(list(base_flags))
+                    # 2-4. Explicit PO-token-friendly clients as fallbacks.
+                    for client in ('tv', 'web_safari', 'mweb'):
+                        youtube_strategies.append(base_flags + ['--extractor-args', f'youtube:player_client={client}'])
+                    # 5. Exported cookies.txt — for age-restricted / region-locked.
+                    if cookies_file.exists():
+                        logger.info(f"Using cookies file: {cookies_file}")
+                        youtube_strategies.append(base_flags + ['--cookies', str(cookies_file)])
+                    # 6. OAuth token file, if the user set one up.
+                    if oauth_file.exists():
+                        youtube_strategies.append(base_flags + ['--username', 'oauth', '--password', str(oauth_file)])
+                    # 7. tv_embedded — last-ditch age-gate bypass.
+                    youtube_strategies.append(base_flags + ['--extractor-args', 'youtube:player_client=tv_embedded'])
+                    # 8. Browser cookies, if a logged-in browser is available.
+                    if cookie_browser:
+                        youtube_strategies.append(base_flags + ['--cookies-from-browser', cookie_browser])
+
+                    # Track if cookies were tried and failed with bot detection
+                    cookies_tried_but_failed = False
+                    source_too_long = False
+                    best_error = None       # most specific classified yt-dlp error seen
+                    last_strategy_msg = None  # raw text of the last failure
+
+                    for i, strategy_args in enumerate(youtube_strategies):
+                        actual_args = list(strategy_args)
+                        strategy_desc = actual_args[:2] if actual_args else ['default']
+                        logger.info(f"Trying YouTube strategy {i+1}/{len(youtube_strategies)}: {strategy_desc}")
+
+                        result = await self._download_with_ytdlp(
+                            source_url, output_template, title, tmdb_id,
+                            actual_args, creationflags, output_dir
+                        )
+                        if isinstance(result, dict) and result.get('path'):
+                            logger.info(f"Strategy {i+1} succeeded!")
+                            return self._with_source(result, source)
+                        # Every client sees the same length, so the remaining
+                        # strategies would only be rejected the same way.
+                        if isinstance(result, dict) and result.get('error') == 'too_long':
+                            too_long_error = result['message']
+                            source_too_long = True
+                            break
+
+                        # Capture the REAL yt-dlp error so we can tell the user the
+                        # actual reason (e.g. "video unavailable") instead of a guess.
+                        if isinstance(result, dict) and result.get('message'):
+                            last_strategy_msg = result['message']
+                            cls = classify_ytdlp_error(last_strategy_msg)
+                            if best_error is None and cls['category'] in (
+                                    'video_unavailable', 'age_restricted', 'rate_limited', 'auth',
+                                    'sabr_blocked'):
+                                best_error = {'category': cls['category'], 'raw': last_strategy_msg}
+                            if '--cookies' in actual_args and cls['category'] == 'auth':
+                                cookies_tried_but_failed = True
+                        # A None result carries no error text, so it says nothing
+                        # about the cookies; treating it as a sign-in failure is
+                        # what turned skipped downloads into YOUTUBE_BOT_BLOCK.
+
+                        # Small delay between strategies to avoid rate limiting
+                        if i < len(youtube_strategies) - 1:
+                            await asyncio.sleep(0.5)
+
+                    if source_too_long:
+                        # Not a YouTube failure, so none of the guidance below applies.
+                        continue
+
+                    # Is the PO-token provider actually usable? Drives the guidance.
+                    pot_usable = False
+                    try:
+                        from backend import nexup_potoken
+                        _m = nexup_potoken.get_manager()
+                        pot_usable = bool(_m and _m.status().get('usable'))
+                    except Exception:
+                        pot_usable = False
+
+                    # Build an honest, specific message. Prefer the real classified
+                    # yt-dlp reason; only fall back to provider/transient guidance when
+                    # YouTube didn't give a concrete cause. The UPPER_CASE prefix is an
+                    # internal code the caller maps to a user message (it is stripped
+                    # before display).
+                    cat = best_error['category'] if best_error else None
+                    raw_short = ''
+                    if best_error:
+                        raw_short = str(best_error['raw']).splitlines()[0].strip()[:180]
+                    elif last_strategy_msg:
+                        raw_short = str(last_strategy_msg).splitlines()[0].strip()[:180]
+
+                    fix = ("Open Movie trailers, If downloads fail, to upload YouTube cookies "
+                           "or start the helper, then try again.")
+                    if cat == 'video_unavailable':
+                        last_error = (
+                            "VIDEO_UNAVAILABLE: YouTube says this trailer is private, removed, members-only or "
+                            "blocked in your country. It's the video, not your setup, so trying again won't help."
+                            + (f" [YouTube: {raw_short}]" if raw_short else "")
+                        )
+                    elif cat == 'age_restricted':
+                        last_error = (
+                            "AGE_RESTRICTED: This trailer is age-restricted, so YouTube only shows it to a "
+                            "signed-in account. Open Movie trailers, If downloads fail, and upload YouTube "
+                            "cookies from a signed-in browser."
+                        )
+                    elif cat == 'rate_limited':
+                        last_error = (
+                            "RATE_LIMITED: YouTube has had too many requests from this network for now. "
+                            "Wait an hour or so, then try again."
+                        )
+                    elif cat == 'sabr_blocked':
+                        last_error = (
+                            "SABR_BLOCKED: YouTube stopped sending this video partway through. That's a change "
+                            "on YouTube's side that a newer version of the downloader (yt-dlp) fixes."
+                            + (f" [YouTube: {raw_short}]" if raw_short else "")
+                        )
+                    elif not pot_usable:
+                        last_error = (
+                            "YOUTUBE_BOT_BLOCK: YouTube asked this server to prove it isn't a robot, and the "
+                            "helper that answers that isn't running. " + fix
+                        )
+                    elif cat == 'auth' or cookies_tried_but_failed:
+                        last_error = (
+                            "YOUTUBE_BOT_BLOCK: YouTube still asked this server to prove it isn't a robot, even "
+                            "with the helper running. " + fix
+                        )
+                    else:
+                        last_error = (
+                            f"DOWNLOAD_FAILED: The trailer didn't download after {len(youtube_strategies)} tries."
+                            + (f" [YouTube: {raw_short}]" if raw_short
+                               else " YouTube didn't say why. This often passes, so try again later.")
+                        )
+                    logger.warning(last_error)
+
+            if too_long_error:
+                last_error = too_long_error
+                logger.info(f"No trailer for {title} fits the max trailer duration: {last_error}")
+            else:
+                logger.error(f"All trailer sources failed for {title}. Last error: {last_error}")
+            # Every strategy failed, so anything yt-dlp wrote is a dead fragment.
+            # Clearing it keeps the folder clean and stops the next attempt from
+            # trying to resume a partial that will just fail again.
+            try:
+                self.cleanup_partial_downloads(output_dir, title, tmdb_id)
+            except Exception:
+                pass
+            # Map the message prefix to a stable error code the UI can branch on.
+            code = 'DOWNLOAD_FAILED'
+            for prefix in ('YOUTUBE_BOT_BLOCK', 'VIDEO_UNAVAILABLE', 'AGE_RESTRICTED', 'RATE_LIMITED', 'SABR_BLOCKED', 'TOO_LONG'):
+                if last_error and last_error.startswith(prefix):
+                    code = prefix
+                    break
+            return {'error': code, 'message': last_error or 'All download strategies failed'}
+
+        except Exception as e:
+            logger.error(f"Error downloading trailer for {title}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {'error': 'EXCEPTION', 'message': str(e)}
+    
+    def _order_by_language(self, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Rank sources against the chosen (non-English) language.
+
+        A source TMDB didn't tag, like Radarr's own link or one TMDB doesn't
+        list, counts as another language: Radarr's trailer is TMDB's English
+        one. With the "skip" fallback only sources in the language are kept,
+        from any region.
+        """
+        ordered = []
+        for source in sources:
+            if 'language_rank' not in source or source.get('language') is None:
+                source['language_rank'] = trailer_language.language_rank(
+                    self.language, source.get('language'), source.get('region'))
+            if (self.language_fallback == trailer_language.FALLBACK_SKIP
+                    and source['language_rank'] > trailer_language.RANK_LANGUAGE):
+                continue
+            ordered.append(source)
+        return ordered
+
+    @staticmethod
+    def _with_source(result: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+        """Record which source a download came from, so callers store its URL."""
+        result['source_url'] = source.get('url')
+        result['language'] = source.get('language')
+        return result
+
+    async def _download_with_ytdlp(
+        self,
+        url: str,
+        output_template: str,
+        title: str,
+        tmdb_id: int,
+        extra_args: List[str],
+        creationflags: int,
+        output_dir: Path = None
+    ) -> Optional[Dict[str, Any]]:
+        """Execute yt-dlp using the Python module directly (works in bundled builds)"""
+        safe_title = self.sanitize_filename(title)
+        
+        # Use provided output_dir or fall back to base storage path
+        search_dir = output_dir if output_dir else self.base_storage_path
+        
+        # Use yt_dlp Python module directly instead of CLI
+        # This works in PyInstaller bundled builds where CLI may not be in PATH
+        try:
+            import yt_dlp
+        except ImportError:
+            logger.error("yt_dlp Python module not available!")
+            return None
+        
+        # Build yt-dlp options dict
+        ydl_opts = {
+            'format': self.get_format_string(),
+            'merge_output_format': 'mp4',
+            'outtmpl': output_template,
+            'noplaylist': True,
+            'no_check_certificate': True,  # --no-check-certificates
+            'socket_timeout': 60,
+            'retries': 3,
+            'quiet': True,  # --no-warnings equivalent
+            'no_warnings': True,
+            'sleep_interval': 1,  # Small delay to avoid rate limiting
+            'max_sleep_interval': 3,
+            'noprogress': True,  # Suppress progress output
+        }
+        
+        # Add duration filter if max_duration is set
+        if self.max_duration and self.max_duration > 0:
+            ydl_opts['match_filter'] = yt_dlp.utils.match_filter_func(f'duration<={self.max_duration}')
+            logger.info(f"Filtering trailers with max duration: {self.max_duration}s")
+        
+        # Parse extra_args and add to options
+        # Handle common extra args like cookies
+        i = 0
+        while i < len(extra_args):
+            arg = extra_args[i]
+            if arg == '--cookies' and i + 1 < len(extra_args):
+                ydl_opts['cookiefile'] = extra_args[i + 1]
+                i += 2
+            elif arg == '--cookies-from-browser' and i + 1 < len(extra_args):
+                # yt-dlp's Python API wants a structured tuple
+                # (browser, profile, keyring, container) - NOT the CLI string
+                # form "edge:+keyring". Parse the CLI spec into that tuple, or
+                # the browser cookie strategies silently fail.
+                ydl_opts['cookiesfrombrowser'] = _parse_cookies_from_browser(extra_args[i + 1])
+                i += 2
+            elif arg == '--username' and i + 1 < len(extra_args):
+                ydl_opts['username'] = extra_args[i + 1]
+                i += 2
+            elif arg == '--extractor-args' and i + 1 < len(extra_args):
+                ydl_opts['extractor_args'] = {'youtube': [extra_args[i + 1].replace('youtube:', '')]}
+                i += 2
+            else:
+                i += 1
+        
+        logger.info(f"Running yt-dlp (Python module) for: {title} from {url[:60]}...")
+        
+        # Run in thread to avoid blocking async event loop
+        def _run_ytdlp():
+            info = None
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    return {'success': True, 'info': info}
+            except yt_dlp.utils.DownloadError as e:
+                error_msg = str(e)
+                if 'Sign in to confirm' in error_msg or 'bot' in error_msg.lower():
+                    logger.warning(f"YouTube bot detection: {error_msg[:300]}")
+                    return {'success': False, 'error': 'bot_detection', 'message': error_msg[:300]}
+                else:
+                    logger.warning(f"yt-dlp download error: {error_msg[:300]}")
+                    return {'success': False, 'error': 'download_error', 'message': error_msg[:300]}
+            except Exception as e:
+                logger.warning(f"yt-dlp exception: {e}")
+                return {'success': False, 'error': 'exception', 'message': str(e)}
+        
+        try:
+            loop = asyncio.get_running_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _run_ytdlp),
+                timeout=300
+            )
+            
+            # Handle the structured result from _run_ytdlp
+            if result and result.get('success'):
+                info = result.get('info', {})
+                # Get the filename from the info dict
+                filepath = info.get('requested_downloads', [{}])[0].get('filepath') if info.get('requested_downloads') else None
+                if not filepath:
+                    filepath = info.get('_filename') or info.get('filename')
+                
+                # Find the file if we don't have filepath
+                if not filepath or not os.path.exists(filepath):
+                    # Try different filename patterns
+                    for ext in ['mp4', 'mkv', 'webm']:
+                        # Try with tmdb_id pattern (movies)
+                        if tmdb_id:
+                            potential_path = search_dir / f"{safe_title}_{tmdb_id}_trailer.{ext}"
+                            if potential_path.exists():
+                                filepath = str(potential_path)
+                                break
+                        # Try without ID pattern
+                        potential_path = search_dir / f"{safe_title}_trailer.{ext}"
+                        if potential_path.exists():
+                            filepath = str(potential_path)
+                            break
+                
+                if filepath and os.path.exists(filepath):
+                    file_size = os.path.getsize(filepath) / (1024 * 1024)
+                    duration = info.get('duration', 0)
+                    resolution = info.get('height', 'Unknown')
+                    logger.info(f"Downloaded trailer: {filepath} ({file_size:.1f} MB)")
+                    return {
+                        'path': filepath,
+                        'size_mb': round(file_size, 2),
+                        'duration': duration,
+                        'title': info.get('title', title),
+                        'resolution': f"{resolution}p" if resolution != 'Unknown' else 'Unknown'
+                    }
+                else:
+                    # The duration match_filter rejects a video without raising:
+                    # yt-dlp returns the info dict and writes nothing. Report that
+                    # as its own error, or it reads as an unexplained failure and
+                    # gets blamed on YouTube blocking the download.
+                    duration = info.get('duration')
+                    if self.max_duration and self.max_duration > 0 and duration and duration > self.max_duration:
+                        message = (
+                            f"TOO_LONG: This trailer runs {_format_duration(duration)}, longer than the "
+                            f"{_format_duration(self.max_duration)} limit for trailers, "
+                            "so it was skipped."
+                        )
+                        logger.info(f"Skipped {title}: trailer runs {duration}s, over the {self.max_duration}s max trailer duration")
+                        return {'error': 'too_long', 'duration': duration, 'message': message}
+                    logger.warning(f"Download reported success but file not found for {title}")
+                    return None
+            elif result and not result.get('success'):
+                # Return the error info so the caller can detect stale cookies
+                return {'error': result.get('error'), 'message': result.get('message', '')}
+                    
+        except asyncio.TimeoutError:
+            logger.error(f"yt-dlp timed out after 300 seconds for {title}")
+            return {'error': 'timeout', 'message': 'Download timed out after 300 seconds'}
+        except Exception as e:
+            logger.warning(f"yt-dlp exception: {e}")
+            return {'error': 'exception', 'message': str(e)}
+        
+        return None
+    
+    def cleanup_partial_downloads(self, output_dir: Path = None, title: str = None, tmdb_id: int = None) -> int:
+        """Remove yt-dlp leftovers (.part/.ytdl and orphaned per-format streams).
+
+        A failed or interrupted download leaves the fragments it had already
+        written — e.g. Title_1234_trailer.f137.mp4.part. Nothing used to clear
+        them, so they accumulated in the storage folder and counted toward
+        reported usage. Worse, a stale .part makes yt-dlp attempt a resume on the
+        next try, which fails again if the partial is no longer valid.
+
+        Scoped to one title when `title` is given, otherwise sweeps the folder.
+        """
+        # Downloads land in the movies/ and tv/ subfolders, so a sweep with no
+        # explicit directory has to cover those too, not just the storage root.
+        if output_dir:
+            search_dirs = [Path(output_dir)]
+        else:
+            search_dirs = [self.base_storage_path, self.movies_path, self.tv_path]
+
+        if title:
+            prefix = self.sanitize_filename(title)
+            if tmdb_id:
+                prefix = f"{prefix}_{tmdb_id}"
+        else:
+            prefix = ''
+        patterns = [f"{prefix}*.part", f"{prefix}*.ytdl",
+                    f"{prefix}*.f[0-9]*.mp4", f"{prefix}*.f[0-9]*.webm", f"{prefix}*.f[0-9]*.m4a"]
+
+        removed = 0
+        for search_dir in search_dirs:
+            try:
+                if not search_dir or not Path(search_dir).is_dir():
+                    continue
+                for pattern in patterns:
+                    for leftover in Path(search_dir).glob(pattern):
+                        try:
+                            leftover.unlink()
+                            removed += 1
+                            logger.info(f"Removed stale download leftover: {leftover.name}")
+                        except Exception as e:
+                            logger.warning(f"Could not remove leftover {leftover.name}: {e}")
+            except Exception as e:
+                logger.warning(f"Partial-download cleanup failed in {search_dir}: {e}")
+        return removed
+
+    def delete_trailer(self, filepath: str) -> bool:
+        """Delete a trailer file"""
+        try:
+            path = Path(filepath)
+            if path.exists():
+                path.unlink()
+                logger.info(f"Deleted trailer: {filepath}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting trailer {filepath}: {e}")
+            return False
+    
+    def get_storage_usage(self) -> Dict[str, Any]:
+        """Get current storage usage statistics - checks all subdirectories"""
+        total_size = 0
+        file_count = 0
+        movies_count = 0
+        tv_count = 0
+        
+        try:
+            # Check movies subdirectory
+            for file in self.movies_path.glob('*_trailer.*'):
+                total_size += file.stat().st_size
+                file_count += 1
+                movies_count += 1
+            
+            # Check tv subdirectory
+            for file in self.tv_path.glob('*_trailer.*'):
+                total_size += file.stat().st_size
+                file_count += 1
+                tv_count += 1
+            
+            # Also check base path for legacy files
+            for file in self.base_storage_path.glob('*_trailer.*'):
+                if file.parent == self.base_storage_path:  # Only direct children, not subdirs
+                    total_size += file.stat().st_size
+                    file_count += 1
+                    
+        except Exception as e:
+            logger.error(f"Error calculating storage usage: {e}")
+        
+        return {
+            'total_size_mb': round(total_size / (1024 * 1024), 2),
+            'total_size_gb': round(total_size / (1024 * 1024 * 1024), 3),
+            'file_count': file_count,
+            'movies_count': movies_count,
+            'tv_count': tv_count,
+            'storage_path': str(self.base_storage_path)
+        }
+    
+    def cleanup_orphaned_files(self, valid_paths: List[str]) -> int:
+        """Remove trailer files not in the valid list - checks all subdirectories"""
+        removed_count = 0
+        try:
+            # Check all locations: movies, tv, and base path
+            for search_path in [self.movies_path, self.tv_path, self.base_storage_path]:
+                for file in search_path.glob('*_trailer.*'):
+                    if file.parent == search_path:  # Only direct children
+                        if str(file) not in valid_paths:
+                            file.unlink()
+                            removed_count += 1
+                            logger.info(f"Removed orphaned trailer: {file}")
+        except Exception as e:
+            logger.error(f"Error during orphan cleanup: {e}")
+        return removed_count
+
+
+class NexUpManager:
+    """
+    Main manager for NeX-Up feature
+    Coordinates between Radarr, trailer downloads, and the database
+    """
+    
+    def __init__(
+        self,
+        radarr_url: str,
+        radarr_api_key: str,
+        storage_path: str,
+        quality: str = '1080',
+        days_ahead: int = 90,
+        max_trailers: int = 10,
+        max_storage_gb: float = 5.0
+    ):
+        self.radarr = RadarrConnector(radarr_url, radarr_api_key)
+        self.downloader = TrailerDownloader(storage_path, quality)
+        self.days_ahead = days_ahead
+        self.max_trailers = max_trailers
+        self.max_storage_gb = max_storage_gb
+        self.storage_path = storage_path
+    
+    async def sync_upcoming_movies(self, db_session) -> Dict[str, Any]:
+        """
+        Full sync: fetch from Radarr, download new trailers, cleanup expired
+        Returns summary of actions taken
+        """
+        from . import models  # Import here to avoid circular imports
+        
+        results = {
+            'fetched': 0,
+            'downloaded': 0,
+            'expired': 0,
+            'errors': [],
+            'movies': []
+        }
+        
+        try:
+            # Fetch upcoming movies from Radarr
+            upcoming = await self.radarr.get_upcoming_movies(self.days_ahead)
+            from backend.trailer_filters import genre_json, refresh_trailer_ratings
+            refresh_trailer_ratings(db_session, models.ComingSoonTrailer, upcoming, "radarr_movie_id", "radarr_id")
+            db_session.commit()
+            results['fetched'] = len(upcoming)
+            
+            # Get existing trailers from database
+            existing = db_session.query(models.ComingSoonTrailer).all()
+            existing_radarr_ids = {t.radarr_movie_id for t in existing}
+            
+            # Check for movies that have been downloaded (cleanup)
+            for trailer in existing:
+                is_downloaded = await self.radarr.check_movie_downloaded(trailer.radarr_movie_id)
+                if is_downloaded:
+                    # Movie has been added to library - remove trailer
+                    self.downloader.delete_trailer(trailer.local_path)
+                    db_session.delete(trailer)
+                    results['expired'] += 1
+                    logger.info(f"Expired trailer for downloaded movie: {trailer.title}")
+            
+            # Download trailers for new movies (up to limit)
+            current_count = db_session.query(models.ComingSoonTrailer).count()
+            storage = self.downloader.get_storage_usage()
+            
+            for movie in upcoming:
+                # Check limits
+                if self.max_trailers > 0 and current_count >= self.max_trailers:
+                    break
+                if storage['total_size_gb'] >= self.max_storage_gb:
+                    break
+                
+                # Skip if already have this movie
+                if movie['radarr_id'] in existing_radarr_ids:
+                    continue
+                
+                # Skip if no trailer URL
+                if not movie['trailer_url']:
+                    continue
+                
+                # Download trailer
+                download_result = await self.downloader.download_trailer(
+                    movie['trailer_url'],
+                    movie['title'],
+                    movie['tmdb_id']
+                )
+
+                # download_trailer returns an {'error','message'} dict on
+                # failure now, so require an actual path (not just truthiness).
+                if download_result and isinstance(download_result, dict) and download_result.get('path'):
+                    # Create database entry
+                    trailer = models.ComingSoonTrailer(
+                        radarr_movie_id=movie['radarr_id'],
+                        tmdb_id=movie['tmdb_id'],
+                        imdb_id=movie.get('imdb_id'),
+                        title=movie['title'],
+                        year=movie.get('year'),
+                        certification=movie.get('certification'),
+                        genres=genre_json(movie.get('genres')),
+                        overview=movie.get('overview', ''),
+                        release_date=datetime.fromisoformat(movie['release_date']).date() if movie['release_date'] else None,
+                        release_type=movie.get('release_type'),
+                        trailer_url=movie['trailer_url'],
+                        local_path=download_result['path'],
+                        file_size_mb=download_result['size_mb'],
+                        duration_seconds=download_result.get('duration', 0),
+                        resolution=download_result.get('resolution', ''),
+                        poster_url=movie.get('poster_url'),
+                        fanart_url=movie.get('fanart_url'),
+                        downloaded_at=utcnow(),
+                        status='downloaded',
+                        is_enabled=True,
+                        play_count=0
+                    )
+                    db_session.add(trailer)
+                    current_count += 1
+                    results['downloaded'] += 1
+                    results['movies'].append(movie['title'])
+                    
+                    # Update storage tracking
+                    storage = self.downloader.get_storage_usage()
+                else:
+                    results['errors'].append(f"Failed to download: {movie['title']}")
+            
+            db_session.commit()
+            
+        except Exception as e:
+            logger.error(f"Error during NeX-Up sync: {e}")
+            results['errors'].append(str(e))
+            db_session.rollback()
+        
+        return results
+    
+    async def get_enabled_trailers(self, db_session, count: int = 3) -> List[Dict]:
+        """Get trailers to include in preroll rotation"""
+        from . import models
+        
+        trailers = db_session.query(models.ComingSoonTrailer)\
+            .filter(models.ComingSoonTrailer.is_enabled == True)\
+            .filter(models.ComingSoonTrailer.status == 'downloaded')\
+            .order_by(models.ComingSoonTrailer.release_date.asc())\
+            .limit(count)\
+            .all()
+        
+        return [
+            {
+                'id': t.id,
+                'title': t.title,
+                'year': t.year,
+                'path': t.local_path,
+                'release_date': t.release_date.isoformat() if t.release_date else None,
+                'days_until': (t.release_date - datetime.now().date()).days if t.release_date else None,
+                'poster_url': t.poster_url
+            }
+            for t in trailers
+        ]
+    
+    def increment_play_count(self, db_session, trailer_id: int):
+        """Track when a trailer is played"""
+        from . import models
+        
+        trailer = db_session.query(models.ComingSoonTrailer).get(trailer_id)
+        if trailer:
+            trailer.play_count += 1
+            trailer.last_played = utcnow()
+            db_session.commit()

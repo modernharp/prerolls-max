@@ -1,0 +1,27 @@
+<Project>
+  <!--
+    The one place the plugin version lives. Every plugin assembly, the
+    Jellyfin meta.json written by build.sh, and the X-PrerollsMax-Plugin header
+    the plugins send all read it from here. Bump it whenever plugin code changes.
+  -->
+  <PropertyGroup>
+    <PrerollsMaxPluginVersion>2.1.0.1</PrerollsMaxPluginVersion>
+    <Version>$(PrerollsMaxPluginVersion)</Version>
+    <AssemblyVersion>$(PrerollsMaxPluginVersion)</AssemblyVersion>
+    <FileVersion>$(PrerollsMaxPluginVersion)</FileVersion>
+    <InformationalVersion>$(PrerollsMaxPluginVersion)</InformationalVersion>
+    <Company>Prerolls Max</Company>
+    <Product>Prerolls Max Intros</Product>
+    <Copyright>MIT licence. Based on NeXroll Intros.</Copyright>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- Media servers load one plugin DLL; never copy their own assemblies next to it. -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+</Project>

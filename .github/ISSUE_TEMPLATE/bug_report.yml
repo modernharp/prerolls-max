@@ -1,0 +1,41 @@
+name: Something isn't working
+description: A bug, or an intro that doesn't play
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for telling us. Before you write more, the app's **Help > My intro isn't playing** troubleshooter solves most problems. If it doesn't, the app's **Report a problem** page collects the details below for you.
+  - type: input
+    id: version
+    attributes:
+      label: Prerolls Max version
+      description: Shown in Settings, or at the bottom of the Help page.
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: How do you run it?
+      options: [Windows installer, Docker, Unraid, From source]
+    validations:
+      required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Which media server?
+      multiple: true
+      options: [Plex, Jellyfin, Emby]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Error message or log lines
+      description: Please remove passwords and API keys first.
+      render: text

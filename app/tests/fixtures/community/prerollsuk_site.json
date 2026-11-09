@@ -1,0 +1,36 @@
+{
+  "_comment": "Prerolls.uk as recorded on 2026-11-08 (servers.json, Caddy JSON listings), trimmed to a few files. Sizes and names are real; the tree is cut down.",
+  "servers": {
+    "servers": [
+      {"id": "uk-norwich-1", "name": "UK Server (Fast)", "baseUrl": "https://prerolls.uk", "status": "active",
+       "provider": "EUGameHost", "anti-spam": "2"},
+      {"id": "uk-newcastle-1", "name": "Home Server (Slow)", "baseUrl": "https://home.prerolls.uk", "status": "active",
+       "provider": "TypicalNerds.co.uk", "anti-spam": "5"}
+    ]
+  },
+  "root_html": "<!DOCTYPE html><html><body><a href=\"/Community/\">Community</a><a href=\"/Holidays/\">Holidays</a><a href=\"https://typicalnerds.uk/\">Typical Nerds</a><a href=\"//evil.example/x/\">x</a></body></html>",
+  "listings": {
+    "/Community/": [
+      {"name": "Matrix - AwesomeAustn/", "size": 1024, "url": "./Matrix%20-%20AwesomeAustn/", "mod_time": "2026-10-25T01:12:10.771249094Z", "mode": 2147484141, "is_dir": true, "is_symlink": false},
+      {"name": "_Universal/", "size": 1024, "url": "./_Universal/", "mod_time": "2026-10-25T01:36:23.231243649Z", "mode": 2147484141, "is_dir": true, "is_symlink": false}
+    ],
+    "/Community/Matrix%20-%20AwesomeAustn/": [
+      {"name": "Matrix Plex.mp4", "size": 12000111, "url": "./Matrix%20Plex.mp4", "mod_time": "2026-10-20T10:00:00.5Z", "mode": 420, "is_dir": false, "is_symlink": false},
+      {"name": "Matrix Jellyfin.mp4", "size": 12000222, "url": "./Matrix%20Jellyfin.mp4", "mod_time": "2026-10-20T10:00:00.5Z", "mode": 420, "is_dir": false, "is_symlink": false},
+      {"name": "notes.txt", "size": 12, "url": "./notes.txt", "mod_time": "2026-10-20T10:00:00Z", "mode": 420, "is_dir": false, "is_symlink": false}
+    ],
+    "/Community/_Universal/": [
+      {"name": "Neon City.mp4", "size": 5000333, "url": "./Neon%20City.mp4", "mod_time": "2026-11-01T09:00:00Z", "mode": 420, "is_dir": false, "is_symlink": false},
+      {"name": "Elsewhere.mp4", "size": 5, "url": "https://evil.example/Elsewhere.mp4", "mod_time": "2026-11-01T09:00:00Z", "mode": 420, "is_dir": false, "is_symlink": false}
+    ],
+    "/Holidays/": [
+      {"name": "Christmas/", "size": 1024, "url": "./Christmas/", "mod_time": "2026-10-25T01:12:10Z", "mode": 2147484141, "is_dir": true, "is_symlink": false}
+    ],
+    "/Holidays/Christmas/": [
+      {"name": "Snow Globe - Plex.mp4", "size": 7000444, "url": "./Snow%20Globe%20-%20Plex.mp4", "mod_time": "2026-09-01T09:00:00Z", "mode": 420, "is_dir": false, "is_symlink": false}
+    ],
+    "/AI/": [
+      {"name": "Robot Usher.mp4", "size": 3000555, "url": "./Robot%20Usher.mp4", "mod_time": "2026-11-05T09:00:00Z", "mode": 420, "is_dir": false, "is_symlink": false}
+    ]
+  }
+}

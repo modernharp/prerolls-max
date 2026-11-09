@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Prerolls Max Intros</title>
+</head>
+<body>
+<div id="PrerollsMaxConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <h2 class="sectionTitle">Prerolls Max Intros</h2>
+            <p class="fieldDescription">
+                Plays the intro videos Prerolls Max chooses before movies and episodes.
+                Prerolls Max can fill these in for you: in Prerolls Max, open Media Servers and press "Set up the plugin for me".
+            </p>
+
+            <form id="PrerollsMaxConfigForm">
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="pmUrl">Prerolls Max address</label>
+                    <input is="emby-input" id="pmUrl" type="url" placeholder="http://192.168.1.5:9393" />
+                    <div class="fieldDescription">
+                        The address this Jellyfin server uses to reach Prerolls Max. Not "localhost" if they run
+                        in separate containers.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="pmKey">API key</label>
+                    <input is="emby-input" id="pmKey" type="password" autocomplete="off" />
+                    <div class="fieldDescription">From Prerolls Max: Settings, Advanced, API keys. Needed when login is on there.</div>
+                </div>
+
+                <div style="margin: 0.5em 0 1.5em;">
+                    <button is="emby-button" type="button" id="pmTest" class="raised emby-button">
+                        <span>Test connection</span>
+                    </button>
+                    <div id="pmTestResult" style="margin-top: 0.8em; padding: 0.6em 0.8em; border-radius: 6px; display: none;"></div>
+                </div>
+
+                <h3 class="sectionTitle">When intros play</h3>
+                <div class="checkboxContainer">
+                    <label>
+                        <input is="emby-checkbox" id="pmMovies" type="checkbox" />
+                        <span>Before movies</span>
+                    </label>
+                </div>
+                <div class="checkboxContainer checkboxContainer-withDescription">
+                    <label>
+                        <input is="emby-checkbox" id="pmEpisodes" type="checkbox" />
+                        <span>Before episodes</span>
+                    </label>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="pmTimeout">Longest wait for Prerolls Max (seconds)</label>
+                    <input is="emby-input" id="pmTimeout" type="number" min="1" max="30" />
+                    <div class="fieldDescription">
+                        If Prerolls Max takes longer, the movie starts with the intros it chose last time (or none).
+                        Intros still downloading play from the next playback on.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="pmBinge">Hours between episodes that still count as one sitting</label>
+                    <input is="emby-input" id="pmBinge" type="number" min="1" max="48" />
+                    <div class="fieldDescription">Used by "first episode only" in Prerolls Max.</div>
+                </div>
+
+                <details style="margin: 1em 0;">
+                    <summary>More settings</summary>
+                    <div class="inputContainer" style="margin-top: 1em;">
+                        <label class="inputLabel inputLabelUnfocused" for="pmCache">Space for downloaded intros (MB)</label>
+                        <input is="emby-input" id="pmCache" type="number" min="256" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="pmFrom">Intro folder as Prerolls Max sees it (optional)</label>
+                        <input is="emby-input" id="pmFrom" type="text" placeholder="/data/prerolls" />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="pmTo">The same folder as Jellyfin sees it (optional)</label>
+                        <input is="emby-input" id="pmTo" type="text" placeholder="/media/prerolls" />
+                        <div class="fieldDescription">
+                            Set both to play intros straight from a shared folder. Otherwise they're downloaded.
+                        </div>
+                    </div>
+                </details>
+
+                <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                    <span>Save</span>
+                </button>
+                <div id="pmSaveResult" style="margin-top: 0.8em; font-weight: 600;"></div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var PLUGIN_ID = 'c0a6ea94-7795-4b61-b964-4ddfb93ec8b0';
+            var page = document.querySelector('#PrerollsMaxConfigPage');
+            function $(id) { return page.querySelector('#' + id); }
+
+            function load() {
+                ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (cfg) {
+                    $('pmUrl').value = cfg.PrerollsMaxUrl || '';
+                    $('pmKey').value = cfg.ApiKey || '';
+                    $('pmMovies').checked = cfg.EnableForMovies !== false;
+                    $('pmEpisodes').checked = cfg.EnableForEpisodes !== false;
+                    $('pmTimeout').value = cfg.TimeoutSeconds || 3;
+                    $('pmBinge').value = cfg.BingeWindowHours || 4;
+                    $('pmCache').value = cfg.MaxCacheMegabytes || 2048;
+                    $('pmFrom').value = cfg.PathPrefixFrom || '';
+                    $('pmTo').value = cfg.PathPrefixTo || '';
+                });
+            }
+
+            function number(id, fallback, min, max) {
+                var n = parseInt($(id).value, 10);
+                if (isNaN(n)) n = fallback;
+                return Math.min(max, Math.max(min, n));
+            }
+
+            function showTest(ok, message) {
+                var el = $('pmTestResult');
+                el.style.display = 'block';
+                el.style.background = ok ? 'rgba(39,174,96,0.15)' : 'rgba(231,76,60,0.15)';
+                el.style.border = '1px solid ' + (ok ? 'rgba(39,174,96,0.4)' : 'rgba(231,76,60,0.4)');
+                el.textContent = message;
+            }
+
+            $('pmTest').addEventListener('click', function (e) {
+                e.preventDefault();
+                showTest(true, 'Checking...');
+                ApiClient.ajax({
+                    type: 'POST',
+                    url: ApiClient.getUrl('PrerollsMax/Test'),
+                    data: JSON.stringify({ PrerollsMaxUrl: $('pmUrl').value.trim(), ApiKey: $('pmKey').value.trim() }),
+                    contentType: 'application/json',
+                    dataType: 'json'
+                }).then(function (r) {
+                    showTest(!!(r.Ok || r.ok), r.Message || r.message || 'No answer.');
+                }, function () {
+                    showTest(false, 'Jellyfin could not run the test. Restart Jellyfin after installing the plugin, then try again.');
+                });
+            });
+
+            $('PrerollsMaxConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (cfg) {
+                    cfg.PrerollsMaxUrl = $('pmUrl').value.trim().replace(/\/+$/, '');
+                    cfg.ApiKey = $('pmKey').value.trim();
+                    cfg.EnableForMovies = $('pmMovies').checked;
+                    cfg.EnableForEpisodes = $('pmEpisodes').checked;
+                    cfg.TimeoutSeconds = number('pmTimeout', 3, 1, 30);
+                    cfg.BingeWindowHours = number('pmBinge', 4, 1, 48);
+                    cfg.MaxCacheMegabytes = number('pmCache', 2048, 256, 1048576);
+                    cfg.PathPrefixFrom = $('pmFrom').value.trim();
+                    cfg.PathPrefixTo = $('pmTo').value.trim();
+                    ApiClient.updatePluginConfiguration(PLUGIN_ID, cfg).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                        $('pmSaveResult').textContent = 'Saved.';
+                    }, function () {
+                        Dashboard.hideLoadingMsg();
+                        $('pmSaveResult').textContent = 'Not saved. Jellyfin refused the change; are you signed in as an administrator?';
+                    });
+                });
+                return false;
+            });
+
+            page.addEventListener('pageshow', load);
+            page.addEventListener('viewshow', load);
+            load();
+        })();
+    </script>
+</div>
+</body>
+</html>

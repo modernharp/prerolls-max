@@ -1,0 +1,366 @@
+{
+ "version": 1,
+ "generatedAt": "2026-11-06T12:40:33.318Z",
+ "count": 6,
+ "platforms": [
+  {
+   "slug": "plex",
+   "name": "Plex"
+  },
+  {
+   "slug": "jellyfin",
+   "name": "Jellyfin"
+  },
+  {
+   "slug": "emby",
+   "name": "Emby"
+  }
+ ],
+ "categories": [
+  {
+   "slug": "glitch-tech",
+   "name": "Glitch & Tech",
+   "count": 1
+  },
+  {
+   "slug": "studio-logos",
+   "name": "Studio Logos",
+   "count": 2
+  },
+  {
+   "slug": "cinematic-fx",
+   "name": "Cinematic FX",
+   "count": 1
+  },
+  {
+   "slug": "theater",
+   "name": "Theater & PSA",
+   "count": 2
+  }
+ ],
+ "tags": [],
+ "prerolls": [
+  {
+   "id": "kYJ9gXbEky7O",
+   "slug": "x-logo-emby-pre-roll",
+   "title": "X Logo",
+   "description": "Two metallic lines cross to form a letter in this sleek industrial video. The minimal design offers a clean and professional look for the screen.",
+   "url": "https://www.prerolls.me/preroll/x-logo-emby-pre-roll",
+   "platforms": [
+    "emby"
+   ],
+   "category": {
+    "slug": "glitch-tech",
+    "name": "Glitch & Tech"
+   },
+   "tags": [],
+   "source": "r2",
+   "durationSeconds": 5.4,
+   "width": 1920,
+   "height": 1080,
+   "fileSize": 3273811,
+   "mime": "video/mp4",
+   "thumbnail": {
+    "small": "https://videos.prerolls.me/thumbs/kYJ9gXbEky7O-480.webp",
+    "large": "https://videos.prerolls.me/thumbs/kYJ9gXbEky7O-960.webp"
+   },
+   "video": {
+    "directUrl": "https://videos.prerolls.me/X%20Logo%20Emby%20Pre-roll.mp4",
+    "embedUrl": null,
+    "watchUrl": null,
+    "youtubeId": null,
+    "vimeoId": null
+   },
+   "download": {
+    "url": "https://www.prerolls.me/download/x-logo-emby-pre-roll",
+    "isDirectFile": true
+   },
+   "credit": null,
+   "customizeUrl": "https://priyansh.net/store",
+   "stats": {
+    "downloads": 1,
+    "likes": 0
+   },
+   "publishedAt": "2026-01-16T01:24:00Z",
+   "updatedAt": "2026-01-16T01:24:00Z"
+  },
+  {
+   "id": "8Li8yYQeyOc8",
+   "slug": "walt-disney-pictures-emby-preroll",
+   "title": "Walt Disney Pictures",
+   "description": "Fireworks explode over a glowing castle silhouette in this magical video. The orchestral melody and fantasy imagery set a wondrous tone for families.",
+   "url": "https://www.prerolls.me/preroll/walt-disney-pictures-emby-preroll",
+   "platforms": [
+    "emby"
+   ],
+   "category": {
+    "slug": "studio-logos",
+    "name": "Studio Logos"
+   },
+   "tags": [
+    {
+     "slug": "studio",
+     "name": "Studio"
+    },
+    {
+     "slug": "disney",
+     "name": "Disney"
+    }
+   ],
+   "source": "r2",
+   "durationSeconds": 21.4,
+   "width": 1280,
+   "height": 720,
+   "fileSize": 1263470,
+   "mime": "video/mp4",
+   "thumbnail": {
+    "small": "https://videos.prerolls.me/thumbs/8Li8yYQeyOc8-480.webp",
+    "large": "https://videos.prerolls.me/thumbs/8Li8yYQeyOc8-960.webp"
+   },
+   "video": {
+    "directUrl": "https://videos.prerolls.me/Walt%20Disney%20Pictures%20Emby%20Preroll.mp4",
+    "embedUrl": null,
+    "watchUrl": null,
+    "youtubeId": null,
+    "vimeoId": null
+   },
+   "download": {
+    "url": "https://www.prerolls.me/download/walt-disney-pictures-emby-preroll",
+    "isDirectFile": true
+   },
+   "credit": null,
+   "customizeUrl": "https://priyansh.net/store",
+   "stats": {
+    "downloads": 0,
+    "likes": 0
+   },
+   "publishedAt": "2026-01-16T01:22:00Z",
+   "updatedAt": "2026-01-16T01:22:00Z"
+  },
+  {
+   "id": "kAzMBLtit4h1",
+   "slug": "water-droplets-emby-pre-roll",
+   "title": "Water Droplets",
+   "description": "Rain falls onto a peaceful lake surface causing ripples in this nature clip. The calming visual and sound create a relaxing atmosphere for the theater.",
+   "url": "https://www.prerolls.me/preroll/water-droplets-emby-pre-roll",
+   "platforms": [
+    "emby"
+   ],
+   "category": {
+    "slug": "cinematic-fx",
+    "name": "Cinematic FX"
+   },
+   "tags": [],
+   "source": "r2",
+   "durationSeconds": 10,
+   "width": 1920,
+   "height": 1080,
+   "fileSize": 6395962,
+   "mime": "video/mp4",
+   "thumbnail": {
+    "small": "https://videos.prerolls.me/thumbs/kAzMBLtit4h1-480.webp",
+    "large": "https://videos.prerolls.me/thumbs/kAzMBLtit4h1-960.webp"
+   },
+   "video": {
+    "directUrl": "https://videos.prerolls.me/Water%20Droplets%20Emby%20Pre-roll.mp4",
+    "embedUrl": null,
+    "watchUrl": null,
+    "youtubeId": null,
+    "vimeoId": null
+   },
+   "download": {
+    "url": "https://www.prerolls.me/download/water-droplets-emby-pre-roll",
+    "isDirectFile": true
+   },
+   "credit": null,
+   "customizeUrl": "https://priyansh.net/store",
+   "stats": {
+    "downloads": 1,
+    "likes": 0
+   },
+   "publishedAt": "2026-01-16T01:23:00Z",
+   "updatedAt": "2026-01-16T01:23:00Z"
+  },
+  {
+   "id": "VSdijuUnVEyP",
+   "slug": "blockbuster-feature-presentation",
+   "title": "Blockbuster Feature Presentation",
+   "description": "A family walks through a video rental store, turning blue and glowing, then a blue Blockbuster style ticket logo appears with feature presentation text.",
+   "url": "https://www.prerolls.me/preroll/blockbuster-feature-presentation",
+   "platforms": [
+    "plex",
+    "jellyfin",
+    "emby"
+   ],
+   "category": {
+    "slug": "theater",
+    "name": "Theater & PSA"
+   },
+   "tags": [
+    {
+     "slug": "feature-presentation",
+     "name": "feature presentation"
+    },
+    {
+     "slug": "blockbuster",
+     "name": "blockbuster"
+    },
+    {
+     "slug": "video-store",
+     "name": "video store"
+    },
+    {
+     "slug": "nostalgia",
+     "name": "nostalgia"
+    }
+   ],
+   "source": "youtube",
+   "durationSeconds": 8,
+   "width": null,
+   "height": null,
+   "fileSize": null,
+   "mime": null,
+   "thumbnail": {
+    "small": "https://i.ytimg.com/vi/bbvq75JD9pM/hqdefault.jpg",
+    "large": "https://i.ytimg.com/vi/bbvq75JD9pM/maxresdefault.jpg"
+   },
+   "video": {
+    "directUrl": null,
+    "embedUrl": "https://www.youtube-nocookie.com/embed/bbvq75JD9pM",
+    "watchUrl": "https://www.youtube.com/watch?v=bbvq75JD9pM",
+    "youtubeId": "bbvq75JD9pM",
+    "vimeoId": null
+   },
+   "download": {
+    "url": "https://www.prerolls.me/download/blockbuster-feature-presentation",
+    "isDirectFile": false
+   },
+   "credit": {
+    "name": "Jonathan M",
+    "url": "https://www.youtube.com/@Redrum215_"
+   },
+   "customizeUrl": null,
+   "stats": {
+    "downloads": 0,
+    "likes": 0
+   },
+   "publishedAt": "2026-11-06T12:23:43Z",
+   "updatedAt": "2026-11-06T12:23:43Z"
+  },
+  {
+   "id": "LpIzGamcOmT7",
+   "slug": "regency-theaters-feature-presentation",
+   "title": "Regency Theaters Feature Presentation",
+   "description": "A hand-drawn Regency Theaters logo with a boxed R on paper, with a thank-you line printed along the bottom.",
+   "url": "https://www.prerolls.me/preroll/regency-theaters-feature-presentation",
+   "platforms": [
+    "plex",
+    "jellyfin",
+    "emby"
+   ],
+   "category": {
+    "slug": "theater",
+    "name": "Theater & PSA"
+   },
+   "tags": [
+    {
+     "slug": "feature-presentation",
+     "name": "feature presentation"
+    },
+    {
+     "slug": "hand-drawn",
+     "name": "hand-drawn"
+    },
+    {
+     "slug": "paper",
+     "name": "paper"
+    }
+   ],
+   "source": "youtube",
+   "durationSeconds": 17,
+   "width": null,
+   "height": null,
+   "fileSize": null,
+   "mime": null,
+   "thumbnail": {
+    "small": "https://i.ytimg.com/vi/UFpdsr_TfSc/hqdefault.jpg",
+    "large": "https://i.ytimg.com/vi/UFpdsr_TfSc/maxresdefault.jpg"
+   },
+   "video": {
+    "directUrl": null,
+    "embedUrl": "https://www.youtube-nocookie.com/embed/UFpdsr_TfSc",
+    "watchUrl": "https://www.youtube.com/watch?v=UFpdsr_TfSc",
+    "youtubeId": "UFpdsr_TfSc",
+    "vimeoId": null
+   },
+   "download": {
+    "url": "https://www.prerolls.me/download/regency-theaters-feature-presentation",
+    "isDirectFile": false
+   },
+   "credit": {
+    "name": "Jacob’s Movie Corner",
+    "url": "https://www.youtube.com/@jacobsmoviecorner8299"
+   },
+   "customizeUrl": null,
+   "stats": {
+    "downloads": 0,
+    "likes": 0
+   },
+   "publishedAt": "2026-11-06T12:23:41Z",
+   "updatedAt": "2026-11-06T12:23:41Z"
+  },
+  {
+   "id": "1jBzHQMeErq5",
+   "slug": "marvel-studios-jellyfin-preroll",
+   "title": "Marvel Studios",
+   "description": "Footage from various films plays inside the large letters of the logo. The fanfare music builds excitement for a blockbuster superhero experience.",
+   "url": "https://www.prerolls.me/preroll/marvel-studios-jellyfin-preroll",
+   "platforms": [
+    "jellyfin"
+   ],
+   "category": {
+    "slug": "studio-logos",
+    "name": "Studio Logos"
+   },
+   "tags": [
+    {
+     "slug": "disney",
+     "name": "Disney"
+    },
+    {
+     "slug": "marvel",
+     "name": "Marvel"
+    }
+   ],
+   "source": "vimeo",
+   "durationSeconds": 37,
+   "width": null,
+   "height": null,
+   "fileSize": null,
+   "mime": null,
+   "thumbnail": {
+    "small": "https://videos.prerolls.me/thumbs/1jBzHQMeErq5-480.webp",
+    "large": "https://videos.prerolls.me/thumbs/1jBzHQMeErq5-960.webp"
+   },
+   "video": {
+    "directUrl": null,
+    "embedUrl": "https://player.vimeo.com/video/717069746",
+    "watchUrl": "https://vimeo.com/717069746",
+    "youtubeId": null,
+    "vimeoId": "717069746"
+   },
+   "download": {
+    "url": "https://www.prerolls.me/download/marvel-studios-jellyfin-preroll",
+    "isDirectFile": false
+   },
+   "credit": null,
+   "customizeUrl": "https://www.priyansh.net/?s=marvel+studios&post_type=product",
+   "stats": {
+    "downloads": 0,
+    "likes": 0
+   },
+   "publishedAt": "2025-01-16T01:46:00Z",
+   "updatedAt": "2025-01-16T01:46:00Z"
+  }
+ ]
+}

@@ -1,0 +1,273 @@
+import os
+import sys
+import shutil
+
+try:
+    from backend.brand import DB_FILENAME, LEGACY_DB_FILENAME
+except ImportError:  # run from inside backend/
+    from brand import DB_FILENAME, LEGACY_DB_FILENAME
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+def _is_elevated() -> bool:
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        pass
+    return False
+def _is_dir_writable(p: str) -> bool:
+    try:
+        os.makedirs(p, exist_ok=True)
+        test = os.path.join(p, f".nexroll_write_test_{os.getpid()}.tmp")
+        with open(test, "w", encoding="utf-8") as f:
+            f.write("ok")
+        try:
+            os.remove(test)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+def _is_file_writable(fp: str) -> bool:
+    """
+    Check if a specific file is writable and if its directory allows creating side files
+    (SQLite requires creating -wal / -shm next to db).
+    """
+    try:
+        # File-level check (may fail if read-only attribute or ACL denies write)
+        if os.path.exists(fp):
+            try:
+                with open(fp, "a", encoding="utf-8"):
+                    pass
+            except Exception:
+                return False
+        # Directory-level side-file check
+        d = os.path.dirname(fp) or "."
+        if not _is_dir_writable(d):
+            return False
+        side = os.path.join(d, f".nexroll_sqlite_side_{os.getpid()}.tmp")
+        with open(side, "w", encoding="utf-8") as f:
+            f.write("ok")
+        try:
+            os.remove(side)
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+
+
+def _install_root() -> str:
+    try:
+        if getattr(sys, "frozen", False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        return os.getcwd()
+
+
+def _program_data_dir() -> str:
+    """
+    Where the database lives by default.
+
+    Windows: %ProgramData%\\Prerolls Max (the installer makes it writable). If
+    it can't be created, %LOCALAPPDATA%\\Prerolls Max (or %APPDATA%, or the home
+    folder). Other systems: a "data" folder next to the program.
+    """
+    # Windows
+    if sys.platform.startswith("win"):
+        pd = os.environ.get("ProgramData")
+        if pd:
+            pd_dir = os.path.join(pd, "Prerolls Max")
+            try:
+                os.makedirs(pd_dir, exist_ok=True)
+                return pd_dir
+            except Exception:
+                pass
+        # Fallback to user-local
+        la = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        try:
+            user_dir = os.path.join(la, "Prerolls Max")
+            os.makedirs(user_dir, exist_ok=True)
+            return user_dir
+        except Exception:
+            pass
+    # Dev/other platforms
+    d = os.path.join(_install_root(), "data")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _copy_sqlite(src: str, dest: str) -> None:
+    """Copy a SQLite database including anything still in its -wal file."""
+    import sqlite3
+    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        target = sqlite3.connect(dest)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+
+def _legacy_db_candidates(target_dir: str, platform: str = None, environ=None) -> list:
+    """Older databases to copy on first run, most likely first.
+
+    The same folder, then the install root. On Windows also NeXroll's own data
+    folders, %ProgramData%\\NeXroll and %LOCALAPPDATA%\\NeXroll, because Prerolls
+    Max keeps its data in a differently named folder.
+    """
+    platform = platform if platform is not None else sys.platform
+    environ = environ if environ is not None else os.environ
+    out = [os.path.join(target_dir, LEGACY_DB_FILENAME),
+           os.path.join(_install_root(), LEGACY_DB_FILENAME),
+           os.path.join(_install_root(), DB_FILENAME)]
+    if platform.startswith("win"):
+        for var in ("ProgramData", "LOCALAPPDATA", "APPDATA"):
+            base = environ.get(var)
+            if base:
+                out.append(os.path.join(base, "NeXroll", LEGACY_DB_FILENAME))
+    seen, unique = set(), []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
+def _resolve_db_path() -> str:
+    # 1) Explicit file override
+    env_path = os.environ.get("PMAX_DB_PATH")
+    if env_path and env_path.strip():
+        dest_path = os.path.abspath(env_path.strip())
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        return dest_path
+
+    # 2) Directory override
+    env_dir = os.environ.get("PMAX_DB_DIR")
+    if env_dir and env_dir.strip():
+        target_dir = os.path.abspath(env_dir.strip())
+    else:
+        target_dir = _program_data_dir()
+
+    # Ensure we end up with a writable directory (ProgramData may exist but not be writable for standard users)
+    if not _is_dir_writable(target_dir):
+        la = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        user_dir = os.path.join(la, "Prerolls Max")
+        if _is_dir_writable(user_dir):
+            target_dir = user_dir
+        else:
+            fallback = os.path.join(_install_root(), "data")
+            try:
+                os.makedirs(fallback, exist_ok=True)
+            except Exception:
+                pass
+            target_dir = fallback
+
+    target_path = os.path.join(target_dir, DB_FILENAME)
+    # Pick up an existing NeXroll database once. The NeXroll file is copied,
+    # never moved or changed.
+    try:
+        if not os.path.exists(target_path):
+            for legacy_path in _legacy_db_candidates(target_dir):
+                if os.path.exists(legacy_path):
+                    _copy_sqlite(legacy_path, target_path)
+                    break
+    except Exception:
+        # Non-fatal; continue with empty/new DB
+        pass
+
+    # Ensure the database file is writable; if not, attempt to fix or relocate to user-local
+    try:
+        if os.path.exists(target_path) and not _is_file_writable(target_path):
+            # Try to drop read-only attribute (may help if only FILE_ATTRIBUTE_READONLY is set)
+            try:
+                import stat
+                os.chmod(target_path, stat.S_IWRITE | stat.S_IREAD)
+            except Exception:
+                pass
+            # Re-check; if still not writable, relocate to user-local app data
+            if not _is_file_writable(target_path):
+                la = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+                user_dir = os.path.join(la, "Prerolls Max")
+                try:
+                    os.makedirs(user_dir, exist_ok=True)
+                except Exception:
+                    # Fallback to install-root data if user dir cannot be created
+                    user_dir = os.path.join(_install_root(), "data")
+                    try:
+                        os.makedirs(user_dir, exist_ok=True)
+                    except Exception:
+                        pass
+                alt_path = os.path.join(user_dir, DB_FILENAME)
+                try:
+                    shutil.copy2(target_path, alt_path)
+                except Exception:
+                    # As a last resort, create an empty DB file
+                    try:
+                        with open(alt_path, "a", encoding="utf-8"):
+                            pass
+                    except Exception:
+                        # Give up on relocation; keep original path
+                        return target_path
+                return alt_path
+    except Exception:
+        # Ignore relocation failures and continue using target_path
+        pass
+
+    return target_path
+
+
+DB_PATH = _resolve_db_path()
+DB_URL_PATH = DB_PATH.replace("\\", "/")
+SQLALCHEMY_DATABASE_URL = "sqlite:///" + DB_URL_PATH
+ 
+# SQLite-specific pool configuration to prevent connection exhaustion
+# Use NullPool for SQLite - creates new connection per request, closes when done
+from sqlalchemy.pool import NullPool
+
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 60  # Increased from 30 to 60 seconds for busy operations
+    },
+    poolclass=NullPool,  # Best practice for SQLite - no connection pooling
+    pool_pre_ping=False,  # Disabled since NullPool doesn't maintain connections
+)
+
+# Apply SQLite pragmas for better concurrency and reliability
+if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            # Enable WAL for concurrent reads/writes
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            # Reasonable sync for performance
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            # Enforce foreign key constraints
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            # Increase busy timeout to 30 seconds to handle high concurrent load (was 10s)
+            cursor.execute("PRAGMA busy_timeout=30000;")
+            cursor.close()
+        except Exception:
+            # Best-effort; continue without raising
+            pass
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()

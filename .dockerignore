@@ -1,0 +1,20 @@
+# Only what the Dockerfile copies is needed; the rest just slows the build.
+**/.git
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.pytest_cache
+frontend/dist
+plugins/**/bin
+plugins/**/obj
+plugins/out
+packaging/windows/dist
+packaging/windows/build
+docs
+**/*.db
+**/*.db-wal
+**/*.db-shm
+data
+build_info.json
+app/backend/build_info.json

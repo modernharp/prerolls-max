@@ -51,8 +51,8 @@ def main() -> None:
         sys.exit(f"Not a GitHub owner/repo: {args.repository!r}")
     vals = values(args.repository)
     (args.out / "unraid").mkdir(parents=True, exist_ok=True)
-    (args.out / "unraid" / "prerolls-max.xml").write_text(
-        render((ROOT / "unraid" / "prerolls-max.xml").read_text(encoding="utf-8"), vals), encoding="utf-8")
+    template = (ROOT / "unraid" / "prerolls-max.xml").read_text(encoding="utf-8").replace("\r\n", "\n")
+    build_site.write_lf(args.out / "unraid" / "prerolls-max.xml", render(template, vals))
     site = build_site.build(args.repository, args.out)
     for warning in sorted(set(site.warnings)):
         print("warning:", warning, file=sys.stderr)

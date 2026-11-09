@@ -29,6 +29,12 @@ GUIDE_DIR = ROOT / "docs" / "features"
 GROUP_ORDER = ["Start here", "Intro videos", "When they play", "Media servers", "Advanced", "Reference", "Deep dives"]
 
 
+def write_lf(path: pathlib.Path, text: str) -> None:
+    """Write UTF-8 with LF line endings on every platform, so builds are identical."""
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
 def esc(s: str) -> str:
     return html.escape(s, quote=False)
 
@@ -852,7 +858,7 @@ def write_all(s: Site, out: pathlib.Path):
     for path, text in s.pages_out.items():
         target = out / "404.html" if path == "/404.html" else out / path.strip("/") / "index.html"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        write_lf(target, text)
         if path != "/404.html":
             paths.append(path)
     assets = out / "assets"
@@ -863,8 +869,8 @@ def write_all(s: Site, out: pathlib.Path):
     shutil.copy(SITE_SRC / "site.js", assets / "site.js")
     lastmod = f"<lastmod>{s.date}</lastmod>" if s.date else ""
     urls = "".join(f"<url><loc>{s.abs(p)}</loc>{lastmod}</url>\n" for p in sorted(paths))
-    (out / "sitemap.xml").write_text(f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}</urlset>\n', encoding="utf-8")
-    (out / "robots.txt").write_text(f"User-agent: *\nAllow: /\n\nSitemap: {s.origin}/sitemap.xml\n", encoding="utf-8")
+    write_lf(out / "sitemap.xml", f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{urls}</urlset>\n')
+    write_lf(out / "robots.txt", f"User-agent: *\nAllow: /\n\nSitemap: {s.origin}/sitemap.xml\n")
     (out / ".nojekyll").write_text("", encoding="utf-8")
 
 

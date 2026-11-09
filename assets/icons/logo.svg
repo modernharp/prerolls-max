@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Prerolls Max">
+  <rect width="512" height="512" rx="112" fill="#4338CA"/>
+  <path d="M112 128h288a16 16 0 0 1 16 16v44H96v-44a16 16 0 0 1 16-16z" fill="#FFFFFF"/>
+  <g fill="#4338CA">
+    <path d="M156 128h44l-30 60h-44z"/>
+    <path d="M244 128h44l-30 60h-44z"/>
+    <path d="M332 128h44l-30 60h-44z"/>
+  </g>
+  <rect x="96" y="204" width="320" height="196" rx="24" fill="#FFFFFF"/>
+  <path d="M226 252 L318 302 L226 352 Z" fill="#4338CA" stroke="#4338CA" stroke-width="18" stroke-linejoin="round"/>
+</svg>

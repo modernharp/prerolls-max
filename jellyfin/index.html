@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jellyfin intros plugin: prerolls with Prerolls Max</title>
+<meta name="description" content="Add intro videos to Jellyfin 10.11 or 12 with the Prerolls Max Intros plugin. Plugin repository link, setup steps and which apps play intros.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#14103a">
+<link rel="canonical" href="https://modernharp.github.io/prerolls-max/jellyfin/">
+<link rel="icon" href="/prerolls-max/assets/icons/favicon.ico" sizes="any">
+<link rel="icon" href="/prerolls-max/assets/icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/prerolls-max/assets/icons/apple-touch-icon.png">
+<link rel="preload" href="/prerolls-max/assets/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/prerolls-max/assets/fonts/lora.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/prerolls-max/assets/site.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Prerolls Max">
+<meta property="og:title" content="Jellyfin intros plugin: prerolls with Prerolls Max">
+<meta property="og:description" content="Add intro videos to Jellyfin 10.11 or 12 with the Prerolls Max Intros plugin. Plugin repository link, setup steps and which apps play intros.">
+<meta property="og:url" content="https://modernharp.github.io/prerolls-max/jellyfin/">
+<meta property="og:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Prerolls Max: intro videos before your movies, for Plex, Jellyfin and Emby">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Jellyfin intros plugin: prerolls with Prerolls Max">
+<meta name="twitter:description" content="Add intro videos to Jellyfin 10.11 or 12 with the Prerolls Max Intros plugin. Plugin repository link, setup steps and which apps play intros.">
+<meta name="twitter:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://modernharp.github.io/prerolls-max/"}, {"@type": "ListItem", "position": 2, "name": "Jellyfin", "item": "https://modernharp.github.io/prerolls-max/jellyfin/"}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does Jellyfin need a plugin for prerolls?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Jellyfin has no setting of its own for intro videos. The Prerolls Max Intros plugin asks Prerolls Max which intro to play each time a movie or episode starts."}}, {"@type": "Question", "name": "Which Jellyfin versions work?", "acceptedAnswer": {"@type": "Answer", "text": "Jellyfin 10.11 and Jellyfin 12. Prerolls Max picks the right plugin for your version."}}, {"@type": "Question", "name": "Can Jellyfin play intros before TV episodes?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. They play before the episode you pick, not between episodes that follow each other on their own. You can also limit them to the first episode of a binge."}}, {"@type": "Question", "name": "Why does my Roku play only the first intro?", "acceptedAnswer": {"@type": "Answer", "text": "The official Jellyfin app on Roku plays only the first intro. Combine several intros into one video and it plays them all."}}, {"@type": "Question", "name": "Will it slow down playback?", "acceptedAnswer": {"@type": "Answer", "text": "No. The plugin waits at most 3 seconds for Prerolls Max, downloads intros in the background, and keeps playing the last list it received if Prerolls Max is down."}}]}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header class="site-header"><div class="wrap">
+<a class="brand" href="/prerolls-max/"><img src="/prerolls-max/assets/icons/icon-192.png" alt="" width="30" height="30">Prerolls Max</a>
+<nav aria-label="Main"><a href="/prerolls-max/download/">Download</a><a href="/prerolls-max/plex/">Plex</a><a href="/prerolls-max/jellyfin/" aria-current="page">Jellyfin</a><a href="/prerolls-max/emby/">Emby</a><a href="/prerolls-max/docs/">Docs</a><a href="/prerolls-max/faq/">FAQ</a><a href="https://github.com/modernharp/prerolls-max" rel="noopener">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page-head"><div class="wrap"><p class="crumbs"><a href="/prerolls-max/">Home</a> / Jellyfin</p><h1>Intro videos on Jellyfin</h1><p>Add the plugin repository, install one plugin, and Jellyfin picks the right intro for every movie and episode.</p></div></div>
+<div class="wrap page"><div class="cols"><div><div class="prose">
+<p>Jellyfin has no built-in setting for intro videos. The Prerolls Max Intros plugin fills the gap: each time a movie or episode starts, it asks Prerolls Max which intro to play. That's how Jellyfin can pick a different intro by genre, age rating, decade, library or person.</p>
+<div class="callout"><h3>What you need</h3><p>Jellyfin 10.11 or 12, Prerolls Max running, and an administrator account on Jellyfin.</p></div>
+<h2 id="setup">Set it up</h2></div>
+<ol class="steplist"><li><h3>Make an API key in Jellyfin</h3><p>Sign in as an administrator, open Dashboard, then API Keys, press <span class="ui">+</span>, call it Prerolls Max, and copy the key.</p></li><li><h3>Connect Prerolls Max to Jellyfin</h3><p>In Prerolls Max, open Media Servers and press <span class="ui">Connect Jellyfin</span>. Enter the address you use to open Jellyfin, like <code>http://192.168.1.10:8096</code>, and paste the key. If Prerolls Max runs in Docker, use the computer's network address, not <code>localhost</code>.</p></li><li><h3>Install the plugin</h3><p>Easiest: in Jellyfin, open Dashboard, Plugins, Repositories, press <span class="ui">+</span>, name it Prerolls Max, and paste the address for your version:</p><pre><code>Jellyfin 12:    https://modernharp.github.io/prerolls-max/jellyfin/manifest.json
+Jellyfin 10.11: https://modernharp.github.io/prerolls-max/jellyfin/manifest-10.11.json</code></pre><p>Open Catalog, install Prerolls Max Intros, and restart Jellyfin.</p><p>Or install by hand: Prerolls Max can download the right zip for you, or take <a href="https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax.Jellyfin-12-2.1.0.1.zip">Jellyfin 12</a> or <a href="https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax.Jellyfin-10.11-2.1.0.1.zip">Jellyfin 10.11</a> from the release. Unzip it into a new folder called <code>PrerollsMax</code> inside Jellyfin's plugins folder (<code>/config/plugins</code> in Docker, <code>/var/lib/jellyfin/plugins</code> on Linux, <code>%LOCALAPPDATA%\jellyfin\plugins</code> on Windows) and restart.</p></li><li><h3>Let Prerolls Max set up the plugin</h3><p>Press <span class="ui">Set up the plugin for me</span> on the Jellyfin card. Prerolls Max fills in the plugin's settings, including a key of its own. Then play any movie in Jellyfin and press <span class="ui">Check now</span>. The card shows Working once the plugin has asked for an intro.</p></li><li><h3>Test it</h3><p>On Home, press <span class="ui">Start test</span> next to Play a test, then start a movie from the beginning in a web browser. Your intro should play first. Test in a browser before a TV or phone: some apps skip intros until you change a setting. See <a href="/prerolls-max/docs/devices/">which apps play intros</a>.</p></li></ol>
+<div class="prose">
+<h2 id="apps">Which Jellyfin apps play intros</h2>
+<div class="table-wrap"><table><thead><tr><th scope="col">App</th><th scope="col">Plays intros?</th></tr></thead><tbody>
+<tr><td>Web browser, Jellyfin Media Player</td><td>Yes, movies and episodes</td></tr>
+<tr><td>Android, Kodi (Jellyfin add-ons)</td><td>Yes</td></tr>
+<tr><td>Android TV</td><td>Movies only, from the start</td></tr>
+<tr><td>Roku (official app)</td><td>Turn on Cinema Mode. Plays only the first intro.</td></tr>
+<tr><td>Swiftfin, Infuse, Jellyfin MPV Shim, Samsung TV</td><td>No</td></tr>
+</tbody></table></div>
+<p>In the apps that play intros, Cinema Mode is on to begin with and each device has its own switch. If one device skips intros, check it is still on. Intros never play when you resume a movie.</p>
+<h2 id="plugin">How the plugin behaves</h2>
+<ul>
+<li>It never holds up playback. It waits at most 3 seconds for Prerolls Max, and intros that aren't downloaded yet keep downloading in the background.</li>
+<li>It keeps working if Prerolls Max is down, by playing the last list of intros it received.</li>
+<li>It tidies up after itself: a scheduled task downloads what could play and removes old copies.</li>
+</ul>
+<h2 id="help">More help</h2>
+<ul>
+<li><a href="/prerolls-max/docs/connect-jellyfin/">Connecting Jellyfin</a>, in full</li>
+<li><a href="/prerolls-max/docs/rules/">Rules: different intros for different titles</a></li>
+<li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li>
+<li>Moving from NeXroll? Remove its NeXroll Intros plugin once Prerolls Max shows Working. <a href="/prerolls-max/docs/moving-from-nexroll/">Guide</a></li>
+</ul>
+<h2 id="faq">Jellyfin questions</h2></div>
+<div class="faq"><details><summary>Does Jellyfin need a plugin for prerolls?</summary><div class="answer"><p>Yes. Jellyfin has no setting of its own for intro videos. The Prerolls Max Intros plugin asks Prerolls Max which intro to play each time a movie or episode starts.</p></div></details><details><summary>Which Jellyfin versions work?</summary><div class="answer"><p>Jellyfin 10.11 and Jellyfin 12. Prerolls Max picks the right plugin for your version.</p></div></details><details><summary>Can Jellyfin play intros before TV episodes?</summary><div class="answer"><p>Yes. They play before the episode you pick, not between episodes that follow each other on their own. You can also limit them to the first episode of a binge.</p></div></details><details><summary>Why does my Roku play only the first intro?</summary><div class="answer"><p>The official Jellyfin app on Roku plays only the first intro. <a href="/prerolls-max/docs/media-tools/">Combine several intros into one video</a> and it plays them all.</p></div></details><details><summary>Will it slow down playback?</summary><div class="answer"><p>No. The plugin waits at most 3 seconds for Prerolls Max, downloads intros in the background, and keeps playing the last list it received if Prerolls Max is down.</p></div></details></div></div><aside class="aside" aria-label="At a glance"><h2>At a glance</h2><dl><dt>Versions</dt><dd>Jellyfin 10.11 and 12</dd><dt>Plugin</dt><dd>Prerolls Max Intros 2.1.0.1</dd><dt>Intros play before</dt><dd>Movies and episodes</dd><dt>Picked</dt><dd>For each play</dd></dl><a class="btn" href="https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax.Jellyfin-12-2.1.0.1.zip">Jellyfin 12 plugin</a><a class="btn ghost" href="https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax.Jellyfin-10.11-2.1.0.1.zip">Jellyfin 10.11 plugin</a><p class="meta"><a href="/prerolls-max/download/#jellyfin">Plugin repository address</a></p></aside></div></div>
+</main>
+<footer class="site-footer"><div class="wrap">
+<div><h2>Prerolls Max</h2><p>Intro videos before your movies, for Plex, Jellyfin and Emby. Version 1.0.0.</p></div>
+<div><h2>Get it</h2><ul><li><a href="/prerolls-max/download/">Download</a></li><li><a href="/prerolls-max/changelog/">What's new</a></li><li><a href="https://github.com/modernharp/prerolls-max/releases" rel="noopener">All releases</a></li></ul></div>
+<div><h2>Set it up</h2><ul><li><a href="/prerolls-max/plex/">Plex</a></li><li><a href="/prerolls-max/jellyfin/">Jellyfin</a></li><li><a href="/prerolls-max/emby/">Emby</a></li><li><a href="/prerolls-max/docs/moving-from-nexroll/">Moving from NeXroll</a></li></ul></div>
+<div><h2>Help</h2><ul><li><a href="/prerolls-max/docs/">Documentation</a></li><li><a href="/prerolls-max/faq/">FAQ</a></li><li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li><li><a href="https://github.com/modernharp/prerolls-max/issues/new/choose" rel="noopener">Report a problem</a></li></ul></div>
+<p class="legal">Free for personal and other noncommercial use under the <a href="https://github.com/modernharp/prerolls-max/blob/main/LICENSE" rel="noopener">PolyForm Noncommercial License 1.0.0</a>. Built on <a href="https://github.com/JFLXCLOUD/NeXroll" rel="noopener">NeXroll</a> by JFLXCLOUD. Community intros come from <a href="https://www.prerolls.me" rel="noopener">Prerolls.me</a> and <a href="https://typicalnerds.uk" rel="noopener">Prerolls.uk</a>. Plex, Jellyfin and Emby are trademarks of their owners; Prerolls Max is not affiliated with them.</p>
+</div></footer>
+<script src="/prerolls-max/assets/site.js" defer></script>
+</body>
+</html>

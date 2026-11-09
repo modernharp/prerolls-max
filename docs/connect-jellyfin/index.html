@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connecting Jellyfin | Prerolls Max</title>
+<meta name="description" content="API key, the Prerolls Max plugin, and what Jellyfin apps support. Part of the Prerolls Max documentation for Plex, Jellyfin and Emby.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#14103a">
+<link rel="canonical" href="https://modernharp.github.io/prerolls-max/docs/connect-jellyfin/">
+<link rel="icon" href="/prerolls-max/assets/icons/favicon.ico" sizes="any">
+<link rel="icon" href="/prerolls-max/assets/icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/prerolls-max/assets/icons/apple-touch-icon.png">
+<link rel="preload" href="/prerolls-max/assets/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/prerolls-max/assets/fonts/lora.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/prerolls-max/assets/site.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Prerolls Max">
+<meta property="og:title" content="Connecting Jellyfin | Prerolls Max">
+<meta property="og:description" content="API key, the Prerolls Max plugin, and what Jellyfin apps support. Part of the Prerolls Max documentation for Plex, Jellyfin and Emby.">
+<meta property="og:url" content="https://modernharp.github.io/prerolls-max/docs/connect-jellyfin/">
+<meta property="og:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Prerolls Max: intro videos before your movies, for Plex, Jellyfin and Emby">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Connecting Jellyfin | Prerolls Max">
+<meta name="twitter:description" content="API key, the Prerolls Max plugin, and what Jellyfin apps support. Part of the Prerolls Max documentation for Plex, Jellyfin and Emby.">
+<meta name="twitter:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://modernharp.github.io/prerolls-max/"}, {"@type": "ListItem", "position": 2, "name": "Docs", "item": "https://modernharp.github.io/prerolls-max/docs/"}, {"@type": "ListItem", "position": 3, "name": "Connecting Jellyfin", "item": "https://modernharp.github.io/prerolls-max/docs/connect-jellyfin/"}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Connecting Jellyfin", "description": "API key, the Prerolls Max plugin, and what Jellyfin apps support.", "url": "https://modernharp.github.io/prerolls-max/docs/connect-jellyfin/", "inLanguage": "en-GB", "isPartOf": {"@type": "WebSite", "name": "Prerolls Max", "url": "https://modernharp.github.io/prerolls-max/"}, "dateModified": "2026-11-09"}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header class="site-header"><div class="wrap">
+<a class="brand" href="/prerolls-max/"><img src="/prerolls-max/assets/icons/icon-192.png" alt="" width="30" height="30">Prerolls Max</a>
+<nav aria-label="Main"><a href="/prerolls-max/download/">Download</a><a href="/prerolls-max/plex/">Plex</a><a href="/prerolls-max/jellyfin/">Jellyfin</a><a href="/prerolls-max/emby/">Emby</a><a href="/prerolls-max/docs/" aria-current="page">Docs</a><a href="/prerolls-max/faq/">FAQ</a><a href="https://github.com/modernharp/prerolls-max" rel="noopener">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page-head"><div class="wrap"><p class="crumbs"><a href="/prerolls-max/">Home</a> / <a href="/prerolls-max/docs/">Docs</a> / Connecting Jellyfin</p><h1>Connecting Jellyfin</h1><p>API key, the Prerolls Max plugin, and what Jellyfin apps support.</p></div></div>
+<div class="wrap page"><div class="docs"><details class="docnav" open><summary class="docnav-toggle">All guides</summary><h2>Start here</h2><ul><li><a href="/prerolls-max/docs/getting-started/">Getting started</a></li><li><a href="/prerolls-max/docs/moving-from-nexroll/">Moving from NeXroll</a></li><li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li><li><a href="/prerolls-max/docs/missed-intros/">Missed-intro check</a></li></ul><h2>Intro videos</h2><ul><li><a href="/prerolls-max/docs/intro-videos/">Adding intro videos</a></li><li><a href="/prerolls-max/docs/community/">Community intros</a></li><li><a href="/prerolls-max/docs/media-tools/">Even loudness, TV-friendly versions and combined videos</a></li><li><a href="/prerolls-max/docs/watch-folders/">Watch folders</a></li></ul><h2>When they play</h2><ul><li><a href="/prerolls-max/docs/schedules/">Choosing when intros play</a></li><li><a href="/prerolls-max/docs/rules/">Rules: different intros for different titles</a></li><li><a href="/prerolls-max/docs/never-play/">TV shows, kids and the never-play list</a></li><li><a href="/prerolls-max/docs/weights-and-cooldowns/">How often and no repeats</a></li></ul><h2>Media servers</h2><ul><li><a href="/prerolls-max/docs/connect-plex/">Connecting Plex</a></li><li><a href="/prerolls-max/docs/connect-jellyfin/" aria-current="page">Connecting Jellyfin</a></li><li><a href="/prerolls-max/docs/connect-emby/">Connecting Emby</a></li><li><a href="/prerolls-max/docs/folder-mapping/">Folder mapping</a></li><li><a href="/prerolls-max/docs/devices/">Which apps play intros</a></li><li><a href="/prerolls-max/docs/several-servers/">More than one media server</a></li><li><a href="/prerolls-max/docs/play-a-test/">Play a test</a></li></ul><h2>Advanced</h2><ul><li><a href="/prerolls-max/docs/playlists/">Playlists</a></li><li><a href="/prerolls-max/docs/movie-trailers/">Movie trailers</a></li><li><a href="/prerolls-max/docs/video-maker/">Video maker</a></li><li><a href="/prerolls-max/docs/storage/">Storage</a></li><li><a href="/prerolls-max/docs/video-scaling/">Video scaling</a></li><li><a href="/prerolls-max/docs/system-updates/">System and updates</a></li></ul><h2>Reference</h2><ul><li><a href="/prerolls-max/docs/play-history/">What played</a></li><li><a href="/prerolls-max/docs/what-servers-can-do/">What each server can do</a></li><li><a href="/prerolls-max/docs/glossary/">Words used in Prerolls Max</a></li><li><a href="/prerolls-max/docs/settings/">Settings</a></li></ul><h2>Deep dives</h2><ul><li><a href="/prerolls-max/docs/guides/media-tools/">Even loudness, TV-friendly versions and combined videos</a></li><li><a href="/prerolls-max/docs/guides/missed-intros/">Missed-intro check</a></li><li><a href="/prerolls-max/docs/guides/play-history/">What Played</a></li><li><a href="/prerolls-max/docs/guides/rules/">Rules: different intros for different titles</a></li><li><a href="/prerolls-max/docs/guides/tv-and-kids/">TV shows, kids and the never-play list</a></li><li><a href="/prerolls-max/docs/guides/watch-folders/">Watch folders</a></li><li><a href="/prerolls-max/docs/guides/weights-and-cooldowns/">How often and no repeats</a></li></ul></details><article class="prose"><p>Jellyfin needs two things:</p>
+<ul><li>an <strong>API key</strong>, so Prerolls Max can talk to Jellyfin</li><li>the <strong>Prerolls Max plugin</strong>, so Jellyfin asks Prerolls Max which intro to play each time something starts</li></ul>
+<h2 id="1-make-an-api-key">1. Make an API key<a class="hash" href="#1-make-an-api-key" aria-label="Link to this section">#</a></h2>
+<ol><li>Open Jellyfin in your browser and sign in as an administrator.</li><li>Go to <strong>Dashboard</strong>, then <strong>API Keys</strong>, and press <strong>+</strong>.</li><li>Call it "Prerolls Max", then copy the key.</li></ol>
+<h2 id="2-connect">2. Connect<a class="hash" href="#2-connect" aria-label="Link to this section">#</a></h2>
+<p>On <span class="ui">Media Servers</span>, press <strong>Connect Jellyfin</strong>. Under <strong>Jellyfin address</strong>, type the address you use to open Jellyfin, like <code>http://192.168.1.10:8096</code>. Paste the key under <strong>API key</strong>.</p>
+<p>If Prerolls Max runs in Docker, use the computer's network address, not <code>localhost</code>.</p>
+<h2 id="3-install-the-plugin">3. Install the plugin<a class="hash" href="#3-install-the-plugin" aria-label="Link to this section">#</a></h2>
+<p>After you connect, the Jellyfin card on <span class="ui">Media Servers</span> shows four steps. Each one turns green when it's done.</p>
+<ol><li>Press <strong>Download the plugin for Jellyfin</strong>. Prerolls Max picks the right one for your Jellyfin version (10.11 or 12).</li><li><p>Unzip it into a new folder called <code>PrerollsMax</code> inside Jellyfin's <code>plugins</code> folder:</p>
+<ul><li>Docker: <code>/config/plugins</code> (inside the folder you mapped to <code>/config</code>)</li><li>Linux: <code>/var/lib/jellyfin/plugins</code></li><li>Windows: <code>%LOCALAPPDATA%\jellyfin\plugins</code></li></ul>
+<p>Restart Jellyfin, then press <strong>I've restarted Jellyfin</strong>.</p></li><li>Press <strong>Set up the plugin for me</strong>. Prerolls Max fills in the plugin's settings, including a key of its own. If Jellyfin runs in Docker or on another computer, first change the address to this computer's network address instead of <code>localhost</code>.</li><li>Play any movie in Jellyfin, then press <strong>Check now</strong>.</li></ol>
+<p>To fill in the plugin's page yourself instead (Jellyfin: <strong>Dashboard</strong>, <strong>Plugins</strong>, <strong>Prerolls Max Intros</strong>), make a key in Prerolls Max under <strong>Settings, Advanced, API keys</strong> and enter it with the address Jellyfin uses to reach Prerolls Max.</p>
+<p>The card shows <strong>Working</strong> once the plugin has asked for an intro.</p>
+<h2 id="which-apps-play-intros">Which apps play intros<a class="hash" href="#which-apps-play-intros" aria-label="Link to this section">#</a></h2>
+<div class="table-wrap"><table><thead><tr><th scope="col">App</th><th scope="col">Plays intros?</th></tr></thead><tbody><tr><td>Web browser, Jellyfin Media Player, Android, Kodi</td><td>Yes</td></tr><tr><td>Android TV</td><td>Movies only, from the start</td></tr><tr><td>Roku (official app)</td><td>Turn on <strong>Cinema Mode</strong> in the app. It plays only the first intro, so <a href="/prerolls-max/docs/media-tools/">combine several into one</a>.</td></tr><tr><td>Swiftfin, Infuse, Jellyfin MPV Shim</td><td>No</td></tr></tbody></table></div>
+<p>In the web app and the others that play intros, <strong>Cinema Mode</strong> is on to begin with, and each device has its own switch. If one device skips intros, check it's still on.</p>
+<p>See <a href="/prerolls-max/docs/devices/">Which apps play intros</a> for every server.</p>
+<h2 id="episodes">Episodes<a class="hash" href="#episodes" aria-label="Link to this section">#</a></h2>
+<p>Intros can play before TV episodes, but only before the episode someone picks, not between episodes that play on their own. To play them only before the first episode of a binge, see <a href="/prerolls-max/docs/never-play/">TV shows, kids and the never-play list</a>.</p>
+<h2 id="moving-from-nexroll">Moving from NeXroll<a class="hash" href="#moving-from-nexroll" aria-label="Link to this section">#</a></h2>
+<p>If you used NeXroll's Jellyfin plugin, remove it once the Prerolls Max plugin shows <strong>Working</strong>, so the two don't both add intros.</p><p class="doc-foot">This page is generated from <a href="https://github.com/modernharp/prerolls-max/blob/main/frontend/src/help/connect-jellyfin.md" rel="noopener">frontend/src/help/connect-jellyfin.md</a> in the repository. <a href="/prerolls-max/docs/">All guides</a>.</p></article></div></div>
+</main>
+<footer class="site-footer"><div class="wrap">
+<div><h2>Prerolls Max</h2><p>Intro videos before your movies, for Plex, Jellyfin and Emby. Version 1.0.0.</p></div>
+<div><h2>Get it</h2><ul><li><a href="/prerolls-max/download/">Download</a></li><li><a href="/prerolls-max/changelog/">What's new</a></li><li><a href="https://github.com/modernharp/prerolls-max/releases" rel="noopener">All releases</a></li></ul></div>
+<div><h2>Set it up</h2><ul><li><a href="/prerolls-max/plex/">Plex</a></li><li><a href="/prerolls-max/jellyfin/">Jellyfin</a></li><li><a href="/prerolls-max/emby/">Emby</a></li><li><a href="/prerolls-max/docs/moving-from-nexroll/">Moving from NeXroll</a></li></ul></div>
+<div><h2>Help</h2><ul><li><a href="/prerolls-max/docs/">Documentation</a></li><li><a href="/prerolls-max/faq/">FAQ</a></li><li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li><li><a href="https://github.com/modernharp/prerolls-max/issues/new/choose" rel="noopener">Report a problem</a></li></ul></div>
+<p class="legal">Free for personal and other noncommercial use under the <a href="https://github.com/modernharp/prerolls-max/blob/main/LICENSE" rel="noopener">PolyForm Noncommercial License 1.0.0</a>. Built on <a href="https://github.com/JFLXCLOUD/NeXroll" rel="noopener">NeXroll</a> by JFLXCLOUD. Community intros come from <a href="https://www.prerolls.me" rel="noopener">Prerolls.me</a> and <a href="https://typicalnerds.uk" rel="noopener">Prerolls.uk</a>. Plex, Jellyfin and Emby are trademarks of their owners; Prerolls Max is not affiliated with them.</p>
+</div></footer>
+<script src="/prerolls-max/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,20 +1,130 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Prerolls Max</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}code{background:#eee;padding:.1rem .3rem;border-radius:4px;word-break:break-all}</style>
-</head><body>
-<h1>Prerolls Max</h1>
-<p>Intro videos (prerolls) for Plex, Jellyfin and Emby. Prerolls Max replaces NeXroll.</p>
-<h2>Jellyfin plugin repository</h2>
-<p>In Jellyfin, open Dashboard, Plugins, Repositories, and add the one for your server:</p>
-<ul>
-<li>Jellyfin 12: <code>https://modernharp.github.io/prerolls-max/jellyfin/manifest.json</code></li>
-<li>Jellyfin 10.11: <code>https://modernharp.github.io/prerolls-max/jellyfin/manifest-10.11.json</code></li>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prerolls Max: intro videos for Plex, Jellyfin and Emby</title>
+<meta name="description" content="Play a short intro before movies on Plex, Jellyfin or Emby. Choose the videos, set when each one plays, and run it on your own PC or NAS. Free for home use.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#14103a">
+<link rel="canonical" href="https://modernharp.github.io/prerolls-max/">
+<link rel="icon" href="/prerolls-max/assets/icons/favicon.ico" sizes="any">
+<link rel="icon" href="/prerolls-max/assets/icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/prerolls-max/assets/icons/apple-touch-icon.png">
+<link rel="preload" href="/prerolls-max/assets/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/prerolls-max/assets/fonts/lora.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/prerolls-max/assets/site.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Prerolls Max">
+<meta property="og:title" content="Prerolls Max: intro videos for Plex, Jellyfin and Emby">
+<meta property="og:description" content="Play a short intro before movies on Plex, Jellyfin or Emby. Choose the videos, set when each one plays, and run it on your own PC or NAS. Free for home use.">
+<meta property="og:url" content="https://modernharp.github.io/prerolls-max/">
+<meta property="og:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Prerolls Max: intro videos before your movies, for Plex, Jellyfin and Emby">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Prerolls Max: intro videos for Plex, Jellyfin and Emby">
+<meta name="twitter:description" content="Play a short intro before movies on Plex, Jellyfin or Emby. Choose the videos, set when each one plays, and run it on your own PC or NAS. Free for home use.">
+<meta name="twitter:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Prerolls Max", "url": "https://modernharp.github.io/prerolls-max/", "image": "https://modernharp.github.io/prerolls-max/assets/img/social-preview.png", "description": "Play short intro videos (prerolls) before movies on Plex, Jellyfin and Emby. Choose the videos and set when each one plays.", "applicationCategory": "MultimediaApplication", "operatingSystem": "Windows 10, Windows 11, Linux (Docker), Unraid", "softwareVersion": "1.0.0", "datePublished": "2026-11-09", "downloadUrl": "https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax_Installer_v1.0.0.exe", "license": "https://polyformproject.org/licenses/noncommercial/1.0.0/", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "screenshot": ["https://modernharp.github.io/prerolls-max/assets/img/home.png", "https://modernharp.github.io/prerolls-max/assets/img/intro-videos.png", "https://modernharp.github.io/prerolls-max/assets/img/schedule-wizard.png", "https://modernharp.github.io/prerolls-max/assets/img/calendar.png", "https://modernharp.github.io/prerolls-max/assets/img/rules.png", "https://modernharp.github.io/prerolls-max/assets/img/media-servers.png"], "isBasedOn": "https://github.com/JFLXCLOUD/NeXroll", "codeRepository": "https://github.com/modernharp/prerolls-max"}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is Prerolls Max free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, for use at home and other noncommercial purposes. The licence is PolyForm Noncommercial 1.0.0, which does not allow selling it or using it to make money. The source code is public on GitHub."}}, {"@type": "Question", "name": "What is a preroll?", "acceptedAnswer": {"@type": "Answer", "text": "A short video that plays before the movie, like the clips a cinema shows before the main film. Plex calls the setting Cinema Trailers. Jellyfin and Emby call them intros."}}, {"@type": "Question", "name": "Which media servers does it work with?", "acceptedAnswer": {"@type": "Answer", "text": "Plex, Jellyfin and Emby, and you can connect more than one at once. Plex needs no plugin. Jellyfin (10.11 and 12) and Emby (4.9 and later) use a small Prerolls Max plugin. See the pages for Plex, Jellyfin and Emby."}}, {"@type": "Question", "name": "Why does everyone get the same intro on Plex?", "acceptedAnswer": {"@type": "Answer", "text": "Plex has one intro list for the whole server, not one per person. Prerolls Max changes that list when a schedule starts or ends. If two people start a movie at the same time, they get intros from the same list. Jellyfin and Emby pick an intro for each play."}}, {"@type": "Question", "name": "I use NeXroll. Can I keep my setup?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Prerolls Max replaces NeXroll and brings your schedules, collections and settings across. Stop NeXroll first: both use port 9393 and both would change the same media servers. Step-by-step guide."}}, {"@type": "Question", "name": "My intro isn't playing. What do I check?", "acceptedAnswer": {"@type": "Answer", "text": "Play a movie from the beginning in a web browser first. If the intro plays there, your setup works and the app on your TV or phone is the reason. The full checklist covers each case, most common first."}}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "WebSite", "name": "Prerolls Max", "url": "https://modernharp.github.io/prerolls-max/"}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header class="site-header"><div class="wrap">
+<a class="brand" href="/prerolls-max/"><img src="/prerolls-max/assets/icons/icon-192.png" alt="" width="30" height="30">Prerolls Max</a>
+<nav aria-label="Main"><a href="/prerolls-max/download/">Download</a><a href="/prerolls-max/plex/">Plex</a><a href="/prerolls-max/jellyfin/">Jellyfin</a><a href="/prerolls-max/emby/">Emby</a><a href="/prerolls-max/docs/">Docs</a><a href="/prerolls-max/faq/">FAQ</a><a href="https://github.com/modernharp/prerolls-max" rel="noopener">GitHub</a></nav>
+</div></header>
+
+<main id="main">
+<section class="hero"><div class="wrap">
+<div>
+<h1>Play an intro before every movie.</h1>
+<p class="lead">Prerolls Max runs next to your media server. You pick the videos and say when each one plays: Halloween intros all October, a kids' intro before anything rated PG, a cinema pre-show on Friday night.</p>
+<div class="btnrow"><a class="btn" href="https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax_Installer_v1.0.0.exe">Download for Windows</a><a class="btn ghost" href="/prerolls-max/download/#docker">Run it with Docker</a></div>
+<p class="fine">Version 1.0.0 for Plex, Jellyfin and Emby. Free for home use. <a href="/prerolls-max/download/">All downloads</a></p>
+</div>
+<div class="stage">
+<div class="leader" aria-hidden="true"><svg viewBox="0 0 160 100" preserveAspectRatio="xMidYMid slice"><g fill="none" stroke="#3f3a8f" stroke-width="0.7"><circle cx="80" cy="50" r="34"/><circle cx="80" cy="50" r="42"/><path d="M0 50H160M80 0V100"/></g></svg><div class="sweep"></div><div class="num"><span>3</span><span>2</span><span>1</span></div></div>
+<figure class="screen"><img class="" src="/prerolls-max/assets/img/home.png" alt="The Prerolls Max Home page: servers connected, what plays now and what plays next" width="1440" height="900" fetchpriority="high" decoding="async"></figure>
+</div>
+</div></section>
+
+<section class="alt" id="schedules"><div class="wrap">
+<div class="sec-head"><h2>You decide when each intro plays</h2><p>A schedule is a set of intros plus a time. When two overlap, you choose which one wins, and a calendar shows what plays on every day.</p></div>
+<ul class="program">
+<li><span class="when">All of October</span><span class="what"><b>Halloween intros.</b> Pick dates, days of the week, or a holiday. Moving ones like Easter are built in.</span></li>
+<li><span class="when">Anything rated PG</span><span class="what"><b>A kids' intro.</b> Rules choose by genre, age rating, decade, library or person on Jellyfin and Emby.</span></li>
+<li><span class="when">Friday night</span><span class="what"><b>A cinema-style pre-show.</b> Pick days of the week and times of day.</span></li>
+<li><span class="when">Horror from the 1980s</span><span class="what"><b>An 80s horror intro.</b> A rule can match a decade and a genre together. Press Try it to check a title.</span></li>
+<li><span class="when">Everything else</span><span class="what"><b>Your default intros.</b> They play when no schedule is on, so no movie starts bare.</span></li>
 </ul>
-<h2>Other downloads</h2>
-<ul>
-<li><a href="https://github.com/modernharp/prerolls-max/releases">Releases</a>: Windows installer, Emby plugin, checksums</li>
-<li>Docker: <code>docker pull ghcr.io/modernharp/prerolls-max:latest</code></li>
-<li>Unraid template: <code>https://modernharp.github.io/prerolls-max/unraid/prerolls-max.xml</code></li>
-</ul>
-</body></html>
+</div></section>
+
+<section id="how"><div class="wrap">
+<div class="sec-head"><h2>Up and running in three steps</h2><p>Most people are done in under half an hour. The app walks you through each step and checks it worked.</p></div>
+<ol class="steps">
+<li><h3>Install it</h3><p>Run the Windows installer, or start the Docker image on a NAS, Unraid or Linux machine. It opens as a web page at port 9393.</p></li>
+<li><h3>Connect your server</h3><p>On Plex you sign in and you're done. Jellyfin and Emby also need a small plugin, and the app downloads the right one for your version.</p></li>
+<li><h3>Pick videos and times</h3><p>Add your own videos or get free ones from Prerolls.me and Prerolls.uk. Then press Play a test and watch it play before a movie.</p></li>
+</ol>
+</div></section>
+
+<section class="alt" id="features"><div class="wrap">
+<div class="sec-head"><h2>What's inside</h2></div>
+<div class="row"><div class="copy-col"><h3>Your videos, in collections</h3><p>Drop in files or paste a link. Group them into collections like "Everyday" and "Halloween", and let Prerolls Max even out the loudness so no intro is far louder than the rest. MP4 plays on every server.</p></div><img class="shot" src="/prerolls-max/assets/img/intro-videos.png" alt="The Intro Videos page: a grid of intro videos sorted into collections" width="1440" height="900" loading="lazy" decoding="async"></div>
+<div class="row flip"><div class="copy-col"><h3>Free intros, with credit</h3><p>Browse Prerolls.me and Prerolls.uk without leaving the app. Each video names the person who made it. YouTube and Vimeo videos open as links and are never downloaded.</p></div><img class="shot" src="/prerolls-max/assets/img/community.png" alt="The Community page listing free intros from Prerolls.me and Prerolls.uk" width="1440" height="900" loading="lazy" decoding="async"></div>
+<div class="row"><div class="copy-col"><h3>Schedules in three steps</h3><p>Choose the collection, choose when, and decide what happens when two schedules overlap. A sentence on the right says what will happen, in plain words, before you save.</p></div><img class="shot crop" src="/prerolls-max/assets/img/schedule-wizard.png" alt="The new schedule wizard with a sentence describing what will happen" width="1440" height="1330" loading="lazy" decoding="async"></div>
+<div class="row flip"><div class="copy-col"><h3>The whole year on a calendar</h3><p>See which schedule plays on each day and which one wins when they overlap. Halloween, Christmas and your everyday intros each get their own colour.</p></div><img class="shot crop" src="/prerolls-max/assets/img/calendar.png" alt="The month calendar showing Halloween, Everyday and Christmas schedules" width="1440" height="1160" loading="lazy" decoding="async"></div>
+<div class="row"><div class="copy-col"><h3>Rules for Jellyfin and Emby</h3><p>Pick a different intro by genre, age rating, decade, library or person. Keep a never-play list. Play intros only before the first episode of a binge. Try it shows which rule would match a title, and why.</p></div><img class="shot crop" src="/prerolls-max/assets/img/rules.png" alt="The Rules page with a kids-safe rule and the Try it box showing a match" width="1440" height="1500" loading="lazy" decoding="async"></div>
+<div class="row flip"><div class="copy-col"><h3>All three servers, side by side</h3><p>Plex, Jellyfin and Emby each get a card that shows whether the connection and the plugin are working. Next to every option, a badge tells you what that server can do.</p></div><img class="shot crop" src="/prerolls-max/assets/img/media-servers.png" alt="The Media Servers page with Plex, Jellyfin and Emby cards" width="1440" height="1690" loading="lazy" decoding="async"></div>
+<div class="row"><div class="copy-col"><h3>Help for when an intro doesn't play</h3><p>A troubleshooter asks which server and app you use and checks your setup as you answer. Home also warns you when a movie started without its intro. The guides are built in and work offline.</p></div><img class="shot crop" src="/prerolls-max/assets/img/help.png" alt="The troubleshooter asking which app you use and checking the setup" width="1440" height="1140" loading="lazy" decoding="async"></div>
+<div class="row flip"><div class="copy-col"><h3>Dark mode, and your phone</h3><p>The app follows your system's light or dark setting. On a phone the same pages fit the screen, with a tab bar at the bottom.</p></div><div class="pair"><img class="shot" src="/prerolls-max/assets/img/dark-home.png" alt="Home in dark mode" width="1440" height="900" loading="lazy" decoding="async"><img class="shot" src="/prerolls-max/assets/img/phone.png" alt="Home on a phone" width="390" height="844" loading="lazy" decoding="async"></div></div>
+</div></section>
+
+<section id="servers"><div class="wrap">
+<div class="sec-head"><h2>What each media server can do</h2><p>The three servers handle intros differently. Prerolls Max works around the limits where it can, and tells you where it can't.</p></div>
+<div class="table-wrap"><table>
+<thead><tr><th scope="col"></th><th scope="col"><a href="/prerolls-max/plex/">Plex</a></th><th scope="col"><a href="/prerolls-max/jellyfin/">Jellyfin</a></th><th scope="col"><a href="/prerolls-max/emby/">Emby</a></th></tr></thead>
+<tbody>
+<tr><th scope="row">Plugin needed</th><td>No</td><td>Yes, Prerolls Max Intros</td><td>Yes, Prerolls Max Intros</td></tr>
+<tr><th scope="row">Costs extra</th><td>No</td><td>No</td><td>Emby Premiere</td></tr>
+<tr><th scope="row">Intros before movies</th><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+<tr><th scope="row">Intros before TV episodes</th><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+<tr><th scope="row">Intro picked for each play</th><td class="no">No, one list for the server</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+<tr><th scope="row">Rules by genre, rating or person</th><td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+<tr><th scope="row">Intro when you resume</th><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+</tbody></table></div>
+<p class="meta">Which apps play intros varies too. Each page below lists them. <a href="/prerolls-max/docs/devices/">Which apps play intros</a>.</p>
+</div></section>
+
+<section class="alt" id="nexroll"><div class="wrap"><div class="read">
+<h2>Coming from NeXroll?</h2>
+<p style="margin-top:.8rem">Prerolls Max started as a fork of NeXroll 2.4.0 and replaces it. Run one or the other, not both: Plex has one intro list per server and both apps would keep overwriting it, and on Jellyfin and Emby every movie would get two sets of intros.</p>
+<p>Your schedules, collections and settings can come across. Open Settings, then Moving from NeXroll, and Prerolls Max reads NeXroll's data folder, a backup file, or a NeXroll that's still running. It shows what it found before it changes anything.</p>
+<p><a class="btn" href="/prerolls-max/docs/moving-from-nexroll/">Read the moving guide</a></p>
+</div></div></section>
+
+<section id="faq"><div class="wrap"><div class="sec-head"><h2>Questions people ask</h2></div>
+<div class="faq"><details><summary>Is Prerolls Max free?</summary><div class="answer"><p>Yes, for use at home and other noncommercial purposes. The licence is PolyForm Noncommercial 1.0.0, which does not allow selling it or using it to make money. The source code is public on GitHub.</p></div></details><details><summary>What is a preroll?</summary><div class="answer"><p>A short video that plays before the movie, like the clips a cinema shows before the main film. Plex calls the setting Cinema Trailers. Jellyfin and Emby call them intros.</p></div></details><details><summary>Which media servers does it work with?</summary><div class="answer"><p>Plex, Jellyfin and Emby, and you can connect more than one at once. Plex needs no plugin. Jellyfin (10.11 and 12) and Emby (4.9 and later) use a small Prerolls Max plugin. See the pages for <a href="/prerolls-max/plex/">Plex</a>, <a href="/prerolls-max/jellyfin/">Jellyfin</a> and <a href="/prerolls-max/emby/">Emby</a>.</p></div></details><details><summary>Why does everyone get the same intro on Plex?</summary><div class="answer"><p>Plex has one intro list for the whole server, not one per person. Prerolls Max changes that list when a schedule starts or ends. If two people start a movie at the same time, they get intros from the same list. Jellyfin and Emby pick an intro for each play.</p></div></details><details><summary>I use NeXroll. Can I keep my setup?</summary><div class="answer"><p>Yes. Prerolls Max replaces NeXroll and brings your schedules, collections and settings across. Stop NeXroll first: both use port 9393 and both would change the same media servers. <a href="/prerolls-max/docs/moving-from-nexroll/">Step-by-step guide</a>.</p></div></details><details><summary>My intro isn't playing. What do I check?</summary><div class="answer"><p>Play a movie from the beginning in a web browser first. If the intro plays there, your setup works and the app on your TV or phone is the reason. <a href="/prerolls-max/docs/intro-not-playing/">The full checklist</a> covers each case, most common first.</p></div></details></div>
+<p style="margin-top:1.4rem"><a href="/prerolls-max/faq/">More questions and answers</a></p>
+</div></section>
+
+<section class="cta-band"><div class="wrap">
+<h2>Try it tonight</h2>
+<p>Download Prerolls Max 1.0.0 for Windows, or run the Docker image. Then press Play a test.</p>
+<div class="btnrow"><a class="btn" href="https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax_Installer_v1.0.0.exe">Download for Windows</a><a class="btn ghost" href="/prerolls-max/download/">Docker, Unraid and plugins</a></div>
+</div></section>
+</main>
+<footer class="site-footer"><div class="wrap">
+<div><h2>Prerolls Max</h2><p>Intro videos before your movies, for Plex, Jellyfin and Emby. Version 1.0.0.</p></div>
+<div><h2>Get it</h2><ul><li><a href="/prerolls-max/download/">Download</a></li><li><a href="/prerolls-max/changelog/">What's new</a></li><li><a href="https://github.com/modernharp/prerolls-max/releases" rel="noopener">All releases</a></li></ul></div>
+<div><h2>Set it up</h2><ul><li><a href="/prerolls-max/plex/">Plex</a></li><li><a href="/prerolls-max/jellyfin/">Jellyfin</a></li><li><a href="/prerolls-max/emby/">Emby</a></li><li><a href="/prerolls-max/docs/moving-from-nexroll/">Moving from NeXroll</a></li></ul></div>
+<div><h2>Help</h2><ul><li><a href="/prerolls-max/docs/">Documentation</a></li><li><a href="/prerolls-max/faq/">FAQ</a></li><li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li><li><a href="https://github.com/modernharp/prerolls-max/issues/new/choose" rel="noopener">Report a problem</a></li></ul></div>
+<p class="legal">Free for personal and other noncommercial use under the <a href="https://github.com/modernharp/prerolls-max/blob/main/LICENSE" rel="noopener">PolyForm Noncommercial License 1.0.0</a>. Built on <a href="https://github.com/JFLXCLOUD/NeXroll" rel="noopener">NeXroll</a> by JFLXCLOUD. Community intros come from <a href="https://www.prerolls.me" rel="noopener">Prerolls.me</a> and <a href="https://typicalnerds.uk" rel="noopener">Prerolls.uk</a>. Plex, Jellyfin and Emby are trademarks of their owners; Prerolls Max is not affiliated with them.</p>
+</div></footer>
+<script src="/prerolls-max/assets/site.js" defer></script>
+</body>
+</html>

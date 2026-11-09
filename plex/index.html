@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plex prerolls: schedule intro videos with Prerolls Max</title>
+<meta name="description" content="Set up intro videos (prerolls) on Plex. No plugin and no Plex Pass: Prerolls Max updates Plex&#x27;s Cinema Trailers list when a schedule starts or ends.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#14103a">
+<link rel="canonical" href="https://modernharp.github.io/prerolls-max/plex/">
+<link rel="icon" href="/prerolls-max/assets/icons/favicon.ico" sizes="any">
+<link rel="icon" href="/prerolls-max/assets/icons/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/prerolls-max/assets/icons/apple-touch-icon.png">
+<link rel="preload" href="/prerolls-max/assets/fonts/oswald.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/prerolls-max/assets/fonts/lora.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/prerolls-max/assets/site.css">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Prerolls Max">
+<meta property="og:title" content="Plex prerolls: schedule intro videos with Prerolls Max">
+<meta property="og:description" content="Set up intro videos (prerolls) on Plex. No plugin and no Plex Pass: Prerolls Max updates Plex&#x27;s Cinema Trailers list when a schedule starts or ends.">
+<meta property="og:url" content="https://modernharp.github.io/prerolls-max/plex/">
+<meta property="og:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Prerolls Max: intro videos before your movies, for Plex, Jellyfin and Emby">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Plex prerolls: schedule intro videos with Prerolls Max">
+<meta name="twitter:description" content="Set up intro videos (prerolls) on Plex. No plugin and no Plex Pass: Prerolls Max updates Plex&#x27;s Cinema Trailers list when a schedule starts or ends.">
+<meta name="twitter:image" content="https://modernharp.github.io/prerolls-max/assets/img/social-preview.png">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://modernharp.github.io/prerolls-max/"}, {"@type": "ListItem", "position": 2, "name": "Plex", "item": "https://modernharp.github.io/prerolls-max/plex/"}]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Does Plex need a plugin for prerolls?", "acceptedAnswer": {"@type": "Answer", "text": "No. Prerolls Max fills in Plex's own Cinema Trailers setting and keeps it up to date."}}, {"@type": "Question", "name": "Do I need Plex Pass?", "acceptedAnswer": {"@type": "Answer", "text": "No. Plex plays your own intro videos without Plex Pass."}}, {"@type": "Question", "name": "Can Plex play a different intro for each movie or person?", "acceptedAnswer": {"@type": "Answer", "text": "No. Plex has one intro list for the whole server and picks the intro before it knows which movie is starting. Prerolls Max changes the list when a schedule starts or ends, which works well for dates and holidays. For choices by genre, rating or person, use Jellyfin or Emby."}}, {"@type": "Question", "name": "Why are there no intros before TV episodes on Plex?", "acceptedAnswer": {"@type": "Answer", "text": "Plex plays intros before movies only. This is a Plex limit, not a setting."}}, {"@type": "Question", "name": "Why can't Plex find my intro files?", "acceptedAnswer": {"@type": "Answer", "text": "Prerolls Max sends Plex the path to each file, and Plex opens the file itself. In Docker the two may see the folder under different paths. Folder mapping fixes it, with a full example."}}]}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+<header class="site-header"><div class="wrap">
+<a class="brand" href="/prerolls-max/"><img src="/prerolls-max/assets/icons/icon-192.png" alt="" width="30" height="30">Prerolls Max</a>
+<nav aria-label="Main"><a href="/prerolls-max/download/">Download</a><a href="/prerolls-max/plex/" aria-current="page">Plex</a><a href="/prerolls-max/jellyfin/">Jellyfin</a><a href="/prerolls-max/emby/">Emby</a><a href="/prerolls-max/docs/">Docs</a><a href="/prerolls-max/faq/">FAQ</a><a href="https://github.com/modernharp/prerolls-max" rel="noopener">GitHub</a></nav>
+</div></header>
+<main id="main">
+<div class="page-head"><div class="wrap"><p class="crumbs"><a href="/prerolls-max/">Home</a> / Plex</p><h1>Intro videos on Plex</h1><p>No plugin, no Plex Pass. Prerolls Max keeps Plex's own intro list up to date.</p></div></div>
+<div class="wrap page"><div class="cols"><div><div class="prose">
+<p>Plex has a setting for intro videos called Cinema Trailers, but it takes one fixed list. To change an intro for Halloween, you'd edit that list by hand and remember to change it back. Prerolls Max edits it for you. When a schedule starts or ends, the list changes.</p>
+<div class="callout"><h3>What you need</h3><p>Plex Media Server, Prerolls Max running, and your intro videos in a folder Plex can open. No Plex Pass and no plugin.</p></div>
+<h2 id="setup">Set it up</h2></div>
+<ol class="steplist"><li><h3>Install Prerolls Max</h3><p>Use the <a href="/prerolls-max/download/">Windows installer or the Docker image</a>, open it in a browser at port 9393, and make your admin account.</p></li><li><h3>Sign in with Plex</h3><p>Open Media Servers and press <span class="ui">Connect Plex</span>, then <span class="ui">Sign in with Plex</span>. A Plex window opens. Your password goes to Plex, never to Prerolls Max. Come back and Prerolls Max finds your server.</p><p>If no window opens, your browser blocked the pop-up: press <span class="ui">Open the Plex sign-in page</span> instead. You can also connect with the server address and a token under Other ways to connect.</p></li><li><h3>Turn on the Plex settings</h3><p>Enable Cinema Trailers in each movie library: edit the library, open Advanced. In each Plex app, Cinema trailers to play before movies must not be 0. On the 2026 Plex apps for Apple TV, iPhone, iPad, Android TV and Fire TV, set it to 1, or those apps skip intros.</p></li><li><h3>Add videos and choose when they play</h3><p>Add your own intros or get free ones in Intro Videos, put them in collections, then press New schedule under When They Play. Turn on default intros so a movie never starts without one. <a href="/prerolls-max/docs/getting-started/">Getting started</a> covers each step.</p></li><li><h3>Test it</h3><p>On Home, press <span class="ui">Start test</span> next to Play a test, then start a movie from the beginning in a web browser. Your intro should play first. Test in a browser before a TV or phone: some apps skip intros until you change a setting. See <a href="/prerolls-max/docs/devices/">which apps play intros</a>.</p></li></ol>
+<div class="prose">
+<h2 id="limits">What Plex can and can't do</h2>
+<ul>
+<li>Plex plays intros before movies only, never before TV episodes.</li>
+<li>Plex has one intro list for the whole server. Everyone watching at the same time gets intros from the same list.</li>
+<li>Intros don't play when you resume a movie.</li>
+<li>Casting, DLNA, Plexamp, downloads and Infuse never play intros.</li>
+</ul>
+<h2 id="apps">Which Plex apps play intros</h2>
+<div class="table-wrap"><table><thead><tr><th scope="col">App</th><th scope="col">Plays intros?</th></tr></thead><tbody>
+<tr><td>Web browser (app.plex.tv), Plex desktop app</td><td>Yes</td></tr>
+<tr><td>Roku, smart TVs</td><td>Usually</td></tr>
+<tr><td>2026 apps for Apple TV, iPhone, iPad, Android TV, Fire TV and Shield</td><td>Only after a change: set Cinema trailers to play before movies to 1 in the app's settings</td></tr>
+<tr><td>Casting, DLNA, Plexamp, downloads, Infuse</td><td>No</td></tr>
+</tbody></table></div>
+<p class="meta">Checked November 2026. If your app isn't listed, test in a web browser first.</p>
+<h2 id="help">More help</h2>
+<ul>
+<li><a href="/prerolls-max/docs/connect-plex/">Connecting Plex</a>, in full</li>
+<li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li>
+<li><a href="/prerolls-max/docs/folder-mapping/">Folder mapping for Docker</a></li>
+<li><a href="/prerolls-max/docs/what-servers-can-do/">What each server can do</a></li>
+</ul>
+<h2 id="faq">Plex questions</h2></div>
+<div class="faq"><details><summary>Does Plex need a plugin for prerolls?</summary><div class="answer"><p>No. Prerolls Max fills in Plex's own Cinema Trailers setting and keeps it up to date.</p></div></details><details><summary>Do I need Plex Pass?</summary><div class="answer"><p>No. Plex plays your own intro videos without Plex Pass.</p></div></details><details><summary>Can Plex play a different intro for each movie or person?</summary><div class="answer"><p>No. Plex has one intro list for the whole server and picks the intro before it knows which movie is starting. Prerolls Max changes the list when a schedule starts or ends, which works well for dates and holidays. For choices by genre, rating or person, use Jellyfin or Emby.</p></div></details><details><summary>Why are there no intros before TV episodes on Plex?</summary><div class="answer"><p>Plex plays intros before movies only. This is a Plex limit, not a setting.</p></div></details><details><summary>Why can't Plex find my intro files?</summary><div class="answer"><p>Prerolls Max sends Plex the path to each file, and Plex opens the file itself. In Docker the two may see the folder under different paths. <a href="/prerolls-max/docs/folder-mapping/">Folder mapping</a> fixes it, with a full example.</p></div></details></div></div><aside class="aside" aria-label="At a glance"><h2>At a glance</h2><dl><dt>Plugin</dt><dd>None needed</dd><dt>Plex Pass</dt><dd>Not needed</dd><dt>Intros play before</dt><dd>Movies only</dd><dt>Picked</dt><dd>When a schedule starts or ends</dd></dl><a class="btn" href="/prerolls-max/download/">Download Prerolls Max</a></aside></div></div>
+</main>
+<footer class="site-footer"><div class="wrap">
+<div><h2>Prerolls Max</h2><p>Intro videos before your movies, for Plex, Jellyfin and Emby. Version 1.0.0.</p></div>
+<div><h2>Get it</h2><ul><li><a href="/prerolls-max/download/">Download</a></li><li><a href="/prerolls-max/changelog/">What's new</a></li><li><a href="https://github.com/modernharp/prerolls-max/releases" rel="noopener">All releases</a></li></ul></div>
+<div><h2>Set it up</h2><ul><li><a href="/prerolls-max/plex/">Plex</a></li><li><a href="/prerolls-max/jellyfin/">Jellyfin</a></li><li><a href="/prerolls-max/emby/">Emby</a></li><li><a href="/prerolls-max/docs/moving-from-nexroll/">Moving from NeXroll</a></li></ul></div>
+<div><h2>Help</h2><ul><li><a href="/prerolls-max/docs/">Documentation</a></li><li><a href="/prerolls-max/faq/">FAQ</a></li><li><a href="/prerolls-max/docs/intro-not-playing/">My intro isn't playing</a></li><li><a href="https://github.com/modernharp/prerolls-max/issues/new/choose" rel="noopener">Report a problem</a></li></ul></div>
+<p class="legal">Free for personal and other noncommercial use under the <a href="https://github.com/modernharp/prerolls-max/blob/main/LICENSE" rel="noopener">PolyForm Noncommercial License 1.0.0</a>. Built on <a href="https://github.com/JFLXCLOUD/NeXroll" rel="noopener">NeXroll</a> by JFLXCLOUD. Community intros come from <a href="https://www.prerolls.me" rel="noopener">Prerolls.me</a> and <a href="https://typicalnerds.uk" rel="noopener">Prerolls.uk</a>. Plex, Jellyfin and Emby are trademarks of their owners; Prerolls Max is not affiliated with them.</p>
+</div></footer>
+<script src="/prerolls-max/assets/site.js" defer></script>
+</body>
+</html>

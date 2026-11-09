@@ -198,4 +198,4 @@ Prerolls Max is released under the [**PolyForm Noncommercial License 1.0.0**](LI
 
 ## Credits
 
-Prerolls Max is built on [NeXroll](https://github.com/JFLXCLOUD/NeXroll) 2.4.0 by JFLXCLOUD, which was released under the MIT licence; that notice is kept in [LICENSE-NEXROLL-MIT](LICENSE-NEXROLL-MIT). Thank you to everyone who worked on it. Community intros come from [Prerolls.me](https://www.prerolls.me) and [Prerolls.uk by Typical Nerds](https://typicalnerds.uk), with each video credited to the person who made it. See [NOTICE.md](NOTICE.md).
+Prerolls Max is built on [NeXroll](https://github.com/JFLXCLOUD/NeXroll) 2.4.0 by JFLXCLOUD, which was released under the MIT licence; that notice is kept in [licenses/NeXroll-MIT.txt](licenses/NeXroll-MIT.txt). Thank you to everyone who worked on it. Community intros come from [Prerolls.me](https://www.prerolls.me) and [Prerolls.uk by Typical Nerds](https://typicalnerds.uk), with each video credited to the person who made it. See [NOTICE.md](NOTICE.md).

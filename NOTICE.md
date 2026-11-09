@@ -1,10 +1,12 @@
+Required Notice: Copyright (c) 2026 Prerolls Max contributors (https://github.com/modernharp/prerolls-max)
+
 # Credits
 
 Prerolls Max started as a fork of **NeXroll** 2.4.0 by JFLXCLOUD:
 https://github.com/JFLXCLOUD/NeXroll
 
 NeXroll is released under the MIT licence, and its copyright and permission
-notice is kept in [LICENSE-NEXROLL-MIT](LICENSE-NEXROLL-MIT). Prerolls Max as a
+notice is kept in [licenses/NeXroll-MIT.txt](licenses/NeXroll-MIT.txt). Prerolls Max as a
 whole is released under the [PolyForm Noncommercial License 1.0.0](LICENSE):
 free for personal, hobby, educational and other noncommercial use. The code
 that came from NeXroll stays available under MIT from the NeXroll project.

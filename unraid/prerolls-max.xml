@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!--
+  Unraid template for Prerolls Max. modernharp, prerolls-max and ghcr.io/modernharp/prerolls-max are filled
+  in by scripts/render_templates.py: the release workflow attaches the result
+  to each GitHub release and publishes it at
+  https://<owner>.github.io/<repo>/unraid/prerolls-max.xml
+-->
+<Container version="2">
+  <Name>PrerollsMax</Name>
+  <Repository>ghcr.io/modernharp/prerolls-max:latest</Repository>
+  <Registry>https://github.com/modernharp/prerolls-max/pkgs/container/prerolls-max</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/modernharp/prerolls-max/issues</Support>
+  <Project>https://github.com/modernharp/prerolls-max</Project>
+  <Overview>Prerolls Max plays intro videos (prerolls) before movies and episodes on Plex, Jellyfin and Emby: schedules, holidays, playlists, rules, community intros, movie trailers and a video maker. It replaces NeXroll: point /data at NeXroll's appdata folder and it copies nexroll.db on first start (NeXroll's file isn't changed), or import a NeXroll backup in Settings, Moving from NeXroll. Stop NeXroll first, or give Prerolls Max another host port to keep both.</Overview>
+  <Category>MediaServer:Video MediaApp:Video Tools:</Category>
+  <WebUI>http://[IP]:[PORT:9393]/</WebUI>
+  <TemplateURL>https://modernharp.github.io/prerolls-max/unraid/prerolls-max.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/modernharp/prerolls-max/main/frontend/public/icons/icon-512.png</Icon>
+  <ExtraParams>--add-host=host.docker.internal:host-gateway</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <Requires/>
+  <Config Name="Web UI port" Target="9393" Default="9393" Mode="tcp" Description="The web page. Use another host port (e.g. 9494) to run next to NeXroll." Type="Port" Display="always" Required="true" Mask="false">9393</Config>
+  <Config Name="App data" Target="/data" Default="/mnt/user/appdata/prerollsmax" Mode="rw" Description="Settings, database, logs and thumbnails. NeXroll's appdata folder works too: its database is copied on first start." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/prerollsmax</Config>
+  <Config Name="Intro videos" Target="/data/prerolls" Default="/mnt/user/media/prerolls" Mode="rw" Description="Your intro videos. Your media server must see this folder too (set Folder mapping in Settings if its path differs)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/prerolls</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User that owns the files" Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group that owns the files" Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="Time zone" Target="TZ" Default="America/New_York" Mode="" Description="So schedules start at the right time" Type="Variable" Display="always" Required="false" Mask="false">America/New_York</Config>
+</Container>

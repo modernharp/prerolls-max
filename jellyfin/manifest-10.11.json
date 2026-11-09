@@ -1,0 +1,20 @@
+[
+  {
+    "guid": "c0a6ea94-7795-4b61-b964-4ddfb93ec8b0",
+    "name": "Prerolls Max Intros",
+    "description": "Plays intro videos chosen by Prerolls Max before movies and episodes.",
+    "overview": "Intro videos from Prerolls Max for Jellyfin 10.11",
+    "owner": "Prerolls Max",
+    "category": "General",
+    "versions": [
+      {
+        "version": "2.1.0.1",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/modernharp/prerolls-max/releases/download/v1.0.0/PrerollsMax.Jellyfin-10.11-2.1.0.1-repository.zip",
+        "checksum": "be4863c9dc7a36fbd3596ef45c275147",
+        "timestamp": "2026-11-09T06:59:04Z",
+        "changelog": "Prerolls Max Intros 2.1.0.1. Repository package enables automatic plugin updates."
+      }
+    ]
+  }
+]
